@@ -1,6 +1,7 @@
 import sys
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QLabel, QLineEdit, QTextEdit)
+                            QHBoxLayout, QPushButton, QLabel, QLineEdit, QTextEdit, QCheckBox)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 import pyqtgraph as pg
 import pyvisa
@@ -19,6 +20,7 @@ class InstrumentWorker(QThread):
         self.task_type = None
         self.params = {}
         self.inst = None
+        self.folder_name = None
         
     def create_task(self, task_type, *args):
         self.task_type=task_type
@@ -40,6 +42,8 @@ class InstrumentWorker(QThread):
                 self.freq_sweep(*self.params)
             elif self.task_type == "power_sweep":
                 self.power_sweep(*self.params)
+            elif self.task_type == "file_download":
+                self.file_download()
             self.finished_task.emit()
         except Exception as e:
             self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e}")
@@ -57,6 +61,17 @@ class InstrumentWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e}")
             
+    def file_download(self):
+        self.inst.chunk_size = 20 * 1024 * 1024
+        self.inst.timeout = 10000
+        files = self.inst.query(':MMEMory:CATalog?')
+        os.makedirs(self.folder_name,exist_ok=True)
+        for file in files:
+            file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
+            with open(f"./{self.folder_name}/{file}", "wb") as f:
+                f.write(file_data)
+        self.inst.timeout = 3000
+            
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
         start_time = time.perf_counter()
         try:
@@ -73,9 +88,7 @@ class InstrumentWorker(QThread):
             
             self.inst.write("TRIG:SOUR BUS")
             
-            print(str(points), got_if_freq)
-            
-            self.response_received.emit(f"doing a scan for {str(points)} points, from {int(start)/1e9}ghz to {int(finish)/1e9}ghz with IF frequency {str(got_if_freq)}hz and power {pow}dB")
+            self.response_received.emit(f"doing a scan for {str(points)} points, from {float(start)/1e9}ghz to {float(finish)/1e9}ghz with IF frequency {str(got_if_freq)}hz and power {pow}dB")
             
             self.inst.write("TRIG:SING")
             
@@ -88,7 +101,7 @@ class InstrumentWorker(QThread):
             self.response_received.emit("scan done")
             
             if(name==None):
-                self.inst.write(f':MMEMory:STORe:SNP "{int(start)/1e9}GHz-{int(finish)/1e9}GHz-{int(power)}dB.s2p"')
+                self.inst.write(f':MMEMory:STORe:SNP "{float(start)/1e9}GHz-{float(finish)/1e9}GHz-{float(power)}dB.s2p"')
             else:
                 self.inst.write(f':MMEMory:STORe:SNP "{name}.s2p"')
                 
@@ -104,14 +117,14 @@ class InstrumentWorker(QThread):
             self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e}")
 
     def freq_sweep(self, start_freq, stop_freq, scan_amount, if_freq, power, points, name=None):
-        step = (int(stop_freq)-int(start_freq))/int(scan_amount)
+        step = (float(stop_freq)-float(start_freq))/int(scan_amount)
         for i in range(int(scan_amount)):
-            self.do_scan(int(start_freq)+i*step,int(start_freq)+(i+1)*step,if_freq,power,points, name)
+            self.do_scan(float(start_freq)+i*step,float(start_freq)+(i+1)*step,if_freq,power,points, name)
             
     def power_sweep(self, start_freq, stop_freq, scan_amount, if_freq, start_power, stop_power, points, name=None):
-        step = (int(stop_power)-int(start_power))/int(scan_amount)
+        step = (float(stop_power)-float(start_power))/int(scan_amount)
         for i in range(int(scan_amount)):
-            self.do_scan(int(start_freq), int(stop_freq), if_freq, int(start_power)+i*step, points, name)
+            self.do_scan(float(start_freq), float(stop_freq), if_freq, float(start_power)+(i*step), points, name)
 
 # --- Main Window ---
 class SciControlApp(QMainWindow):
@@ -135,12 +148,15 @@ class SciControlApp(QMainWindow):
     
         #parameters
         self.start_freq = QLineEdit("3")        
-        self.finish_freq = QLineEdit("5")
-        self.scan_amount = QLineEdit("5")
-        self.if_freq = QLineEdit("5")
-        self.start_power = QLineEdit("5")
-        self.finish_power = QLineEdit("5")
-        self.points = QLineEdit("5")
+        self.finish_freq = QLineEdit("8")
+        self.scan_amount = QLineEdit("10")
+        self.if_freq = QLineEdit("500")
+        self.start_power = QLineEdit("-40")
+        self.finish_power = QLineEdit("-20")
+        self.points = QLineEdit("5001")
+
+        self.btn_donwload =  QCheckBox("Download data from VNA")
+        self.btn_donwload.setChecked(True)
 
         self.btn_freq_sweep = QPushButton("Do freq sweep")
         self.btn_freq_sweep.clicked.connect(self.freq_sweep)
@@ -154,7 +170,6 @@ class SciControlApp(QMainWindow):
         self.left_layout.addWidget(QLabel("Enter a working directory (where saves will be on a VNA), left empty for current timestamp"))
         self.left_layout.addWidget(self.folder_name)
         self.left_layout.addWidget(self.btn_init)
-        self.left_layout.addWidget(QLabel(""))
         self.left_layout.addWidget(QLabel("Frequency start (in GHz)"))
         self.left_layout.addWidget(self.start_freq)
         self.left_layout.addWidget(QLabel("Frequency finish (in GHz)"))
@@ -169,6 +184,7 @@ class SciControlApp(QMainWindow):
         self.left_layout.addWidget(self.finish_power)
         self.left_layout.addWidget(QLabel("Points per scan"))
         self.left_layout.addWidget(self.points)
+        # self.left_layout.addWidget(self.btn_donwload)
         self.left_layout.addWidget(self.btn_freq_sweep)
         self.left_layout.addWidget(self.btn_power_sweep)
         
@@ -201,24 +217,50 @@ class SciControlApp(QMainWindow):
             self.worker.response_received.connect(self.handle_response)
             self.worker.error_occurred.connect(self.handle_error)
             self.worker.start()
-            self.worker.finished_task.connect(self.trigger_folder_creation)
             
         except Exception as e:
             self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}")
             del self.worker
-
-    def trigger_folder_creation(self):
-        self.worker.finished_task.disconnect(self.trigger_folder_creation)
+            
+            
+    def freq_sweep(self):
         
         folder = self.folder_name.text().strip()
-        target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        
-        self.log(f"Initializing working directory: {target}...")
-        self.worker.create_task("work_dir", target)
+        self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
+        self.log(f"Initializing working directory: {self.target}...")
+        self.worker.finished_task.connect(self.trigger_freq_sweep)
+        self.worker.create_task("work_dir",self.target)
         self.worker.start()
-
         
-    def freq_sweep(self):
+        
+    def power_sweep(self):
+        
+        folder = self.folder_name.text().strip()
+        self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
+        self.log(f"Initializing working directory: {self.target}...")
+        self.worker.finished_task.connect(self.trigger_power_sweep)
+        self.worker.create_task("work_dir",self.target)
+        self.worker.start()
+        
+    # def trigger_folder_creation(self):
+    #     self.worker.finished_task.disconnect(self.trigger_folder_creation)
+        
+    #     folder = self.folder_name.text().strip()
+    #     self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
+        
+    #     self.log(f"Initializing working directory: {self.target}...")
+    #     self.worker.create_task("work_dir", self.target)
+    #     self.worker.start()
+
+    def trigger_file_download(self):
+        self.worker.finished_task.disconnect(self.trigger_file_download)
+        self.worker.folder_name = self.target
+        self.worker.create_task("file_download")
+        self.worker.start()
+        
+    def trigger_freq_sweep(self):
+        
+        self.worker.finished_task.disconnect(self.trigger_freq_sweep)
         if hasattr(self, 'worker'):
             if self.worker.isRunning():
                 self.log("Wait! An experiment is already in progress.", color="orange")
@@ -226,11 +268,15 @@ class SciControlApp(QMainWindow):
         else:
             self.log("No instruments were initialized", color="orange")
             return
+        if self.btn_donwload.isChecked():
+            self.worker.finished_task.connect(self.trigger_file_download)
         self.worker.create_task("freq_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
                                self.start_power.text(), self.points.text())
         self.worker.start()
 
-    def power_sweep(self):
+    def trigger_power_sweep(self):
+        
+        self.worker.finished_task.disconnect(self.trigger_power_sweep)
         if hasattr(self, 'worker'):
             if self.worker.isRunning():
                 self.log("Wait! An experiment is already in progress.", color="orange")
@@ -238,6 +284,8 @@ class SciControlApp(QMainWindow):
         else:
             self.log("No instruments were initialized", color="orange")
             return
+        if self.btn_donwload.isChecked():
+            self.worker.finished_task.connect(self.trigger_file_download)
         self.worker.create_task("power_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
                                self.start_power.text(), self.finish_power.text(), self.points.text())
         self.worker.start()
