@@ -65,8 +65,13 @@ class InstrumentWorker(QThread):
         self.inst.chunk_size = 20 * 1024 * 1024
         self.inst.timeout = 10000
         files = self.inst.query(':MMEMory:CATalog?')
+        files = files.split(",")
         os.makedirs(self.folder_name,exist_ok=True)
         for file in files:
+            file = file.strip('"\x00 \n\r')
+            if not file:
+                continue
+            self.response_received.emit(f"Downloading {file}")
             file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
@@ -184,7 +189,7 @@ class SciControlApp(QMainWindow):
         self.left_layout.addWidget(self.finish_power)
         self.left_layout.addWidget(QLabel("Points per scan"))
         self.left_layout.addWidget(self.points)
-        # self.left_layout.addWidget(self.btn_donwload)
+        self.left_layout.addWidget(self.btn_donwload)
         self.left_layout.addWidget(self.btn_freq_sweep)
         self.left_layout.addWidget(self.btn_power_sweep)
         
