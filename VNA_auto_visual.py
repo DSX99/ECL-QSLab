@@ -260,6 +260,15 @@ class SchedulerDisplay(QScrollArea):
         task_widget.deleteLater() 
         # Schedule renumbering for after the widget is officially gone
         self.renumber_tasks()
+        
+    def remove_task_index(self, index):
+        """Removes a task by its index in the layout"""
+        if 0 <= index < self.list_layout.count():
+            item = self.list_layout.itemAt(index)
+            if item:
+                widget = item.widget()
+                if isinstance(widget, TaskBox):
+                    self.remove_task(widget)
 
     def renumber_tasks(self):
         """Loops through remaining widgets to update their [XX] labels"""
@@ -277,6 +286,7 @@ class SciControlApp(QMainWindow):
         
         self.tasks = []
         self.current_task=0
+        self.current_temp=0
         
         self.setWindowTitle("SCPI Instrument Controller")
         self.resize(1500, 900)
@@ -401,6 +411,7 @@ class SciControlApp(QMainWindow):
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
         self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
+        self.target = self.target +f"_{self.current_temp}mK"
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir",self.target)
         
@@ -423,7 +434,7 @@ class SciControlApp(QMainWindow):
             return
         if self.btn_donwload.isChecked():
             self.worker.finished_task.connect(self.trigger_file_download)
-        self.worker.create_task("freq_sweep",*task)
+        self.worker.create_task("freq_sweep",*task[1:-1])
         self.worker.start()
 
     def trigger_power_sweep(self):
@@ -438,14 +449,17 @@ class SciControlApp(QMainWindow):
             return
         if self.btn_donwload.isChecked():
             self.worker.finished_task.connect(self.trigger_file_download)
-        self.worker.create_task("power_sweep",*task)
+        self.worker.create_task("power_sweep",*task[1:-1])
         self.worker.start()
         
     def send_task(self,*args):
         try:
+            if not self.tasks:
+                return
             if ((float(args[3])*1000)>=float(self.tasks[0][-1]) and not self.worker.isRunning()):
                 task=self.tasks[0]
                 self.current_task=task
+                self.current_temp=float(args[3])*1000
                 self.trigger_folder_creation()
                 if(task[0] == "freq_sweep"):
                     self.worker.finished_task.connect(self.trigger_freq_sweep)
