@@ -47,7 +47,7 @@ class InstrumentWorker(QThread):
                 self.file_download()
             self.finished_task.emit()
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e}")
+            self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e}","in worker.run")
 
     def working_dir(self, name):
         try:
@@ -58,13 +58,13 @@ class InstrumentWorker(QThread):
             path = self.inst.query(':MMEM:CDIR?').replace('"','')
             self.response_received.emit(f"Working dir:{path}")
         except pyvisa.errors.VisaIOError as e:
-            self.error_occurred.emit(f"VISA IO Error in working_dir: {e.description}")
+            self.error_occurred.emit(f"VISA IO Error in working_dir: {e.description}","in worker.working_dir")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e}")
+            self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e}","in worker.working_dir")
             
     def file_download(self):
         self.inst.chunk_size = 20 * 1024 * 1024
-        self.inst.timeout = 10000
+        self.inst.timeout = 100000
         files = self.inst.query(':MMEMory:CATalog?')
         files = files.split(",")
         os.makedirs(self.folder_name,exist_ok=True)
@@ -100,9 +100,9 @@ class InstrumentWorker(QThread):
             
             self.response_received.emit("waiting the scan...")
             
-            self.inst.timeout = 1e5 # 100 sec
+            self.inst.timeout = 2e5 # 200 sec
             self.inst.query("*OPC?")
-            self.inst.timeout = 1e4
+            self.inst.timeout = 2e4
             
             self.response_received.emit("scan done")
             
@@ -117,10 +117,10 @@ class InstrumentWorker(QThread):
             self.response_received.emit(f"Elapsed time: {end_time - start_time:.6f} seconds")
             
         except pyvisa.errors.VisaIOError as e:
-            self.error_occurred.emit(f"VISA IO Error in do_scan: {e}")
-            self.error_occurred.emit(f"timeout was {self.inst.timeout/1e3} sec")
+            self.error_occurred.emit(f"VISA IO Error in do_scan: {e}","in do_scan")
+            self.error_occurred.emit(f"timeout was {self.inst.timeout/1e3} sec","in do_scan")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e}")
+            self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e}","in do_scan")
 
     def freq_sweep(self, start_freq, stop_freq, scan_amount, if_freq, power, points, name=None):
         step = (float(stop_freq)-float(start_freq))/int(scan_amount)
@@ -238,6 +238,7 @@ class TaskBox(QFrame):
 
 class SchedulerDisplay(QScrollArea):
     """The scrollable container for all tasks"""
+    task_deleted = pyqtSignal(int)
     def __init__(self):
         super().__init__()
         self.setWidgetResizable(True)
@@ -255,11 +256,22 @@ class SchedulerDisplay(QScrollArea):
         self.list_layout.addWidget(new_task)
         
     def remove_task(self, task_widget):
-        """Removes the widget from layout and deletes it"""
-        self.list_layout.removeWidget(task_widget)
-        task_widget.deleteLater() 
-        # Schedule renumbering for after the widget is officially gone
-        self.renumber_tasks()
+        """Removes the widget from layout, deletes it, and notifies the app"""
+        # 1. Find the index of the widget before removing it
+        index = -1
+        for i in range(self.list_layout.count()):
+            if self.list_layout.itemAt(i).widget() == task_widget:
+                index = i
+                break
+        
+        # 2. Perform the UI cleanup
+        if index != -1:
+            self.list_layout.removeWidget(task_widget)
+            task_widget.deleteLater()
+            self.renumber_tasks()
+            
+            # 3. Emit the signal so SciControlApp can sync its data list
+            self.task_deleted.emit(index)
         
     def remove_task_index(self, index):
         """Removes a task by its index in the layout"""
@@ -357,8 +369,9 @@ class SciControlApp(QMainWindow):
         #scheduler + file control (right section)
         self.right_panel = QWidget()
         self.right_layout = QVBoxLayout(self.right_panel)
-        self.sensor_data = QLineEdit("/mnt/z/manual_file_name_auto.csv" ) 
+        self.sensor_data = QLineEdit("/run/user/1000/gvfs/smb-share:server=10.1.197.100,share=data/manual_file_name_auto.csv" ) 
         self.scheduler_ui = SchedulerDisplay()
+        self.scheduler_ui.task_deleted.connect(self.sync_task_list)
         
         self.right_layout.addWidget(QLabel("Address from which to pull temperature data (set it before init)"))
         self.right_layout.addWidget(self.sensor_data)
@@ -390,9 +403,10 @@ class SciControlApp(QMainWindow):
             self.worker.start()
             self.csv_reader = CSVWorker(self.sensor_data.text())
             self.csv_reader.new_row_signal.connect(self.send_task)
+            self.csv_reader.start_monitoring()
             
         except Exception as e:
-            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}")
+            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}","in inst_init")
             del self.worker
             
             
@@ -453,6 +467,7 @@ class SciControlApp(QMainWindow):
         self.worker.start()
         
     def send_task(self,*args):
+        args=args[0]
         try:
             if not self.tasks:
                 return
@@ -469,16 +484,21 @@ class SciControlApp(QMainWindow):
                     self.handle_error(f"Unknown task: {self.tasks[0]}")
                 self.worker.start() #maybe move it to trigger_folder_creation
                 self.scheduler_ui.remove_task_index(0)
-                self.tasks.pop(0)
                 
         except Exception as e:
-            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}")
+            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}","in send_task")
         
+    def sync_task_list(self, index):
+        """Syncs the internal list when a task is removed from the UI"""
+        if 0 <= index < len(self.tasks):
+            removed = self.tasks.pop(index)
+            self.log(f"Removed task {index + 1} from schedule: {removed[0]}", color="gray")
+            
     def handle_response(self, text):
         self.log(f"{text}", color = "white")
         
-    def handle_error(self, err):
-        self.log(f"ERROR: {err}", color="#ff4d4d")
+    def handle_error(self, err, extra=None):
+        self.log(f"ERROR: {err}, extra info:{extra}", color="#ff4d4d")
 
     
 
