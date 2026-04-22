@@ -384,6 +384,8 @@ class SciControlApp(QMainWindow):
         container = QWidget()
         container.setLayout(self.top_box)
         self.setCentralWidget(container)
+        
+        self.print_wrapper = lambda: self.log("Done downloading")
 
         
     def log(self, text, color="white"):
@@ -428,12 +430,13 @@ class SciControlApp(QMainWindow):
         self.target = self.target +f"_{self.current_temp}mK"
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir",self.target)
+        self.worker.start()
         
     def trigger_file_download(self):
         self.worker.finished_task.disconnect(self.trigger_file_download)
         self.worker.folder_name = self.target
         self.worker.create_task("file_download")
-        self.worker.finished_task.connect(lambda: self.log("Done downloading"))
+        self.worker.finished_task.connect(self.print_wrapper)
         self.worker.start()
         
     def trigger_freq_sweep(self):
@@ -469,20 +472,24 @@ class SciControlApp(QMainWindow):
     def send_task(self,*args):
         args=args[0]
         try:
+            self.worker.finished_task.disconnect(self.print_wrapper)
+        except (TypeError, RuntimeError):
+            pass
+        try:
             if not self.tasks:
                 return
             if ((float(args[3])*1000)>=float(self.tasks[0][-1]) and not self.worker.isRunning()):
                 task=self.tasks[0]
                 self.current_task=task
                 self.current_temp=float(args[3])*1000
-                self.trigger_folder_creation()
                 if(task[0] == "freq_sweep"):
                     self.worker.finished_task.connect(self.trigger_freq_sweep)
                 elif(task[0] == "power_sweep"):
                     self.worker.finished_task.connect(self.trigger_power_sweep)
                 else:
                     self.handle_error(f"Unknown task: {self.tasks[0]}")
-                self.worker.start() #maybe move it to trigger_folder_creation
+                self.trigger_folder_creation()
+                self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp}mK")
                 self.scheduler_ui.remove_task_index(0)
                 
         except Exception as e:
