@@ -8,6 +8,7 @@ import pyvisa
 import numpy as np
 import time
 import csv  
+import atexit
 
 #worker for async work
 class InstrumentWorker(QThread):
@@ -34,9 +35,16 @@ class InstrumentWorker(QThread):
                 rm = pyvisa.ResourceManager()
                 print(self.resource_name)
                 self.inst = rm.open_resource(self.resource_name, read_termination='\n')
-                self.inst.read()
+                self.inst.timeout=15e3
                 id = self.inst.query('*IDN?')
                 self.response_received.emit(id)
+                
+                def cleanup():
+                    print("Atexit: Closing the conenction...")
+                    self.inst.close()
+                
+                atexit.register(cleanup)
+                
             elif self.task_type == "work_dir":
                 self.working_dir(*self.params)
             elif self.task_type == "freq_sweep":
@@ -47,7 +55,7 @@ class InstrumentWorker(QThread):
                 self.file_download()
             self.finished_task.emit()
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e}","in worker.run")
+            self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e} in run")
 
     def working_dir(self, name):
         try:
@@ -58,13 +66,13 @@ class InstrumentWorker(QThread):
             path = self.inst.query(':MMEM:CDIR?').replace('"','')
             self.response_received.emit(f"Working dir:{path}")
         except pyvisa.errors.VisaIOError as e:
-            self.error_occurred.emit(f"VISA IO Error in working_dir: {e.description}","in worker.working_dir")
+            self.error_occurred.emit(f"VISA IO Error in working_dir: {e.description} in working_dir")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e}","in worker.working_dir")
+            self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e} in working_dir")
             
     def file_download(self):
         self.inst.chunk_size = 20 * 1024 * 1024
-        self.inst.timeout = 100000
+        self.inst.timeout = 100e3
         files = self.inst.query(':MMEMory:CATalog?')
         files = files.split(",")
         os.makedirs(self.folder_name,exist_ok=True)
@@ -76,7 +84,7 @@ class InstrumentWorker(QThread):
             file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
-        self.inst.timeout = 3000
+        self.inst.timeout = 30e3
             
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
         start_time = time.perf_counter()
@@ -100,9 +108,9 @@ class InstrumentWorker(QThread):
             
             self.response_received.emit("waiting the scan...")
             
-            self.inst.timeout = 2e5 # 200 sec
+            self.inst.timeout = 200e3 # 200 sec
             self.inst.query("*OPC?")
-            self.inst.timeout = 2e4
+            self.inst.timeout = 25e3
             
             self.response_received.emit("scan done")
             
@@ -117,10 +125,10 @@ class InstrumentWorker(QThread):
             self.response_received.emit(f"Elapsed time: {end_time - start_time:.6f} seconds")
             
         except pyvisa.errors.VisaIOError as e:
-            self.error_occurred.emit(f"VISA IO Error in do_scan: {e}","in do_scan")
-            self.error_occurred.emit(f"timeout was {self.inst.timeout/1e3} sec","in do_scan")
+            self.error_occurred.emit(f"VISA IO Error in do_scan: {e} in do_scan")
+            self.error_occurred.emit(f"timeout was {self.inst.timeout/1e3} sec in do_scan")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e}","in do_scan")
+            self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e} in do_scan")
 
     def freq_sweep(self, start_freq, stop_freq, scan_amount, if_freq, power, points, name=None):
         step = (float(stop_freq)-float(start_freq))/int(scan_amount)
@@ -131,6 +139,13 @@ class InstrumentWorker(QThread):
         step = (float(stop_power)-float(start_power))/int(scan_amount)
         for i in range(int(scan_amount)):
             self.do_scan(float(start_freq), float(stop_freq), if_freq, float(start_power)+(i*step), points, name)
+    
+    def __del__ (self):
+        if hasattr(self, 'inst') and self.inst is not None:
+            try:
+                self.inst.close()
+            except Exception as e:
+                self.error_occurred(f"{e}")
 
 #data parser from some csv
 class CSVWorker(QObject):
@@ -398,7 +413,9 @@ class SciControlApp(QMainWindow):
             self.log("Instrument already initiated (restart code, i will add this feature later)", color="orange")
             return
         try:
-            self.worker = InstrumentWorker(f"TCPIP0::{self.addr.text()}::5024::SOCKET")
+            if hasattr(self, 'worker'):
+                del self.worker
+            self.worker = InstrumentWorker(f"TCPIP0::{self.addr.text()}::5025::SOCKET")
             self.worker.create_task("init")
             self.worker.response_received.connect(self.handle_response)
             self.worker.error_occurred.connect(self.handle_error)
@@ -408,7 +425,7 @@ class SciControlApp(QMainWindow):
             self.csv_reader.start_monitoring()
             
         except Exception as e:
-            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}","in inst_init")
+            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in inst_init")
             del self.worker
             
             
@@ -493,7 +510,7 @@ class SciControlApp(QMainWindow):
                 self.scheduler_ui.remove_task_index(0)
                 
         except Exception as e:
-            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e}","in send_task")
+            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in send_task")
         
     def sync_task_list(self, index):
         """Syncs the internal list when a task is removed from the UI"""
@@ -504,8 +521,8 @@ class SciControlApp(QMainWindow):
     def handle_response(self, text):
         self.log(f"{text}", color = "white")
         
-    def handle_error(self, err, extra=None):
-        self.log(f"ERROR: {err}, extra info:{extra}", color="#ff4d4d")
+    def handle_error(self, err):
+        self.log(f"ERROR: {err}", color="#ff4d4d")
 
     
 
