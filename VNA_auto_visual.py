@@ -447,7 +447,7 @@ class SciControlApp(QMainWindow):
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
         self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        self.target = self.target +f"_{self.current_temp}mK_{self.start_freq.text()}-{self.finish_freq.text()}GHz_{self.current_task[0]}"
+        self.target = self.target +f"_{self.current_temp}mK_{self.current_task[1]}-{self.current_task[2]}GHz_{self.current_task[0]}"
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir",self.target)
         self.worker.start()
