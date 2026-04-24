@@ -45,6 +45,9 @@ class InstrumentWorker(QThread):
                 
                 atexit.register(cleanup)
                 
+                self.inst.write(":MMEMory:STORe:SNP:FORMat 'RI'")
+                self.inst.write(":CALCulate1:PARameter1:DEFine 'S21'")
+                
             elif self.task_type == "work_dir":
                 self.working_dir(*self.params)
             elif self.task_type == "freq_sweep":
@@ -84,6 +87,7 @@ class InstrumentWorker(QThread):
             file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
+        self.inst.write(f':MMEMory:RDIRectory "local/auto/{self.folder_name}"')
         self.inst.timeout = 30e3
             
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
@@ -409,9 +413,6 @@ class SciControlApp(QMainWindow):
             self.console.append(formatted_text)
             
     def inst_init(self):
-        if hasattr(self, 'worker'):
-            self.log("Instrument already initiated (restart code, i will add this feature later)", color="orange")
-            return
         try:
             if hasattr(self, 'worker'):
                 del self.worker
