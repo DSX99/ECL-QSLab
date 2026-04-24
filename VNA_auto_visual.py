@@ -88,7 +88,7 @@ class InstrumentWorker(QThread):
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
         print(self.folder_name)
-        self.inst.write(f':MMEMory:RDIRectory "local/auto/{self.folder_name}"')
+        self.inst.write(f':MMEMory:RDIRectory "/local/auto/{self.folder_name}"')
         self.response_received.emit("Deleted Folder")
         self.inst.timeout = 30e3
             
