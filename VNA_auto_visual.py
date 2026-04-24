@@ -151,7 +151,7 @@ class InstrumentWorker(QThread):
             try:
                 self.inst.close()
             except Exception as e:
-                self.error_occurred(f"{e}")
+                self.error_occurred(f"{e} in deletion of worker")
 
 #data parser from some csv
 class CSVWorker(QObject):
@@ -447,7 +447,7 @@ class SciControlApp(QMainWindow):
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
         self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        self.target = self.target +f"_{self.current_temp}mK"
+        self.target = self.target +f"_{self.current_temp}mK_{self.start_freq.text()}-{self.finish_freq.text()}GHz"
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir",self.target)
         self.worker.start()
