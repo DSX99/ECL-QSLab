@@ -87,7 +87,9 @@ class InstrumentWorker(QThread):
             file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
+        print(self.folder_name)
         self.inst.write(f':MMEMory:RDIRectory "local/auto/{self.folder_name}"')
+        self.response_received.emit("Deleted Folder")
         self.inst.timeout = 30e3
             
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
