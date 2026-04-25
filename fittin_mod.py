@@ -59,7 +59,7 @@ def find_peaks(freq, magn, window_size=None, base_freq = 1e6, verbose = False):
     #add verification of possible points // verification of no double dips (multiple dips in one window) (maybe just decrease window size for now)
         
     average_width=4
-    shift =int(base_freq/(freq[1]-freq[0]))
+    shift =int(base_freq/(2*(freq[1]-freq[0])))
     if(verbose):
         print("assuming base width of peak (indeces):",shift)
     marker_x=[]
@@ -89,7 +89,7 @@ def find_peaks(freq, magn, window_size=None, base_freq = 1e6, verbose = False):
 
     i=0
     while i < len(possible_points)-1:
-        if (freq[possible_points[i+1]] - freq[possible_points[i]]) < (0.05 *1e9):
+        if (freq[possible_points[i+1]] - freq[possible_points[i]]) < (0.05 *1e8):
             if magn[possible_points[i]] < magn[possible_points[i+1]]:
                 possible_points.pop(i+1)
             else:
@@ -382,7 +382,7 @@ if __name__ == "__main__":
     fig = go.Figure()
 
     fig = make_subplots(
-        rows=2*len(files), cols=1,
+        rows=1, cols=1,
         shared_xaxes=False,
         vertical_spacing=0.02,
         subplot_titles=file_names+file_names
@@ -390,18 +390,23 @@ if __name__ == "__main__":
     
     out=[]
     
-    for index, file in enumerate(files, start=1):
-        ntwk = rf.Network(file)
-        freq = ntwk.f 
-        print(type(freq))
-        mag = ntwk.s_mag[:, 1, 0]
-        magn_dB = ntwk.s_db[:, 1, 0] 
-        phase = ntwk.s_rad_unwrap[:, 1, 0]
-        freq = [f for f in freq if f <8e9]
-        freq = np.array(freq)
-        mag = mag[:len(freq)]
-        magn_dB = magn_dB[:len(freq)]
-        phase = phase[:len(freq)]
+    for index, file in enumerate([1], start=1):
+        ntwk = rf.Network("./data/fit_2026-04-24/7.19GHz-7.55GHz-15.0dB.s2p")
+        freq_1 = ntwk.f 
+        mag_1 = ntwk.s_mag[:, 1, 0]
+        magn_dB_1 = ntwk.s_db[:, 1, 0] 
+        phase_1 = ntwk.s_rad_unwrap[:, 1, 0]
+        ntwk = rf.Network("./data/fit_2026-04-24/7.19GHz-7.55GHz--55.0dB.s2p")
+        freq_2 = ntwk.f 
+        mag_2 = ntwk.s_mag[:, 1, 0]
+        magn_dB_2 = ntwk.s_db[:, 1, 0] 
+        phase_2 = ntwk.s_rad_unwrap[:, 1, 0]
+        for i in range(len(freq_1)):
+            assert freq_1[i]==freq_2[i],f"diff in freq freq_1:{freq_1[i]} freq_2:{freq_2[i]}"
+        freq=freq_1
+        magn_dB=magn_dB_2-magn_dB_1
+        phase=phase_2-phase_1
+        mag = pow(10,magn_dB/20)
         x = np.arange(len(phase))
         m, q = np.polyfit(x, phase, 1)
         phase = phase - (m * x + q)
@@ -409,9 +414,9 @@ if __name__ == "__main__":
         fig.add_trace(go.Scattergl(
             x=freq,
             y= magn_dB,
-            legendgroup=f'raw {file.name}',
+            legendgroup=f'raw',
             mode='lines',
-            name=f"raw {file.name}",
+            name=f"raw",
             line=dict(color='black', width=1.5),
             opacity=0.7
         ),row=index,col=1)
@@ -419,13 +424,15 @@ if __name__ == "__main__":
         fig.update_xaxes(title_text="Freq", tickformat=".7s",ticksuffix="Hz", row=index, col=1)
         fig.update_yaxes(title_text="S21(dB)", row=index, col=1)
         
-        marker_x, marker_y = find_peaks(freq,magn_dB ,window_size= 100 ,base_freq=2e8, verbose=0)
+        marker_x, marker_y = find_peaks(freq,magn_dB ,window_size= 50 ,base_freq=1e7, verbose=1)
+        print("Markers")
+        print(marker_x)
         
         fig.add_trace(go.Scattergl(
             x=marker_x,
             y=marker_y,
             mode='markers',
-            name=f"resonator guesses for {file.name}",
+            name=f"resonator guesses",
             marker=dict(
                 color='red',
                 size=8,
@@ -437,41 +444,43 @@ if __name__ == "__main__":
         point_indexes = np.where(np.isin(freq,marker_x))[0]
         num_traces = len(marker_x)
         
-        for count,point in enumerate(point_indexes, start=1):
+        for count,point in enumerate(point_indexes, start=2):
             
-            point_high = np.abs(freq - (freq[point]+1e6)).argmin()
-            point_low = np.abs(freq - (freq[point]-1e6)).argmin()
+            point_high = np.abs(freq - (freq[point]+1e7)).argmin()
+            point_low = np.abs(freq - (freq[point]-1e7)).argmin()
             
             freq_tmp = freq[point_low:point_high]
             phase_temp = phase[point_low:point_high]
 
-            re = np.real(mag[point_low:point_high])
-            im = np.imag(mag[point_low:point_high])
+            s21 = mag*np.exp(1j*phase)
+
+            re = np.real(s21[point_low:point_high])
+            im = np.imag(s21[point_low:point_high])
             
-            fig.add_trace(go.Scattergl(
-                x=re,
-                y=im,
-                legendgroup=f'raw circle {file.name} {count}',
-                mode='lines',
-                name=f"raw circle {file.name} {count}",
-                line=dict(color='black', width=1.5),
-                opacity=0.7
-            ),row=len(files)+index,col=1)
+            # fig.add_trace(go.Scattergl(
+            #     x=re,
+            #     y=im,
+            #     legendgroup=f'raw circle {count}',
+            #     mode='lines',
+            #     name=f"raw circle {count}",
+            #     line=dict(color='black', width=1.5),
+            #     opacity=0.7
+            # ),row=count,col=1)
             
-            re_mark = np.abs(mag[point]) * np.cos(phase[point])
-            im_mark = np.abs(mag[point]) * np.sin(phase[point])
-            fig.add_trace(go.Scattergl(
-                x=[re_mark],
-                y=[im_mark],
-                mode='markers',
-                name=f"marker circle {file.name} {count}",
-                marker=dict(
-                    color='red',
-                    size=6,
-                    symbol='diamond',
-                    line=dict(width=2, color='White')
-                )
-            ),row=len(files)+index,col=1)
+            # re_mark = np.abs(mag[point]) * np.cos(phase[point])
+            # im_mark = np.abs(mag[point]) * np.sin(phase[point])
+            # fig.add_trace(go.Scattergl(
+            #     x=[re_mark],
+            #     y=[im_mark],
+            #     mode='markers',
+            #     name=f"marker circle {count}",
+            #     marker=dict(
+            #         color='red',
+            #         size=6,
+            #         symbol='diamond',
+            #         line=dict(width=2, color='White')
+            #     )
+            # ),row=count,col=1)
                 
             f0, Qi, Qe, Qr, zfit, popt, pcov, resid, pinit = do_fit_linear(freq_tmp,re,im,f0=freq_tmp[int(len(freq_tmp)/2)])
             
@@ -482,21 +491,21 @@ if __name__ == "__main__":
             rgb = colorsys.hls_to_rgb(hue / 360, 0.5, 0.8)
             
             legend_label = (
-                f"<b><span style='font-size: 16px'>Fit {count} for {file.name}</span></b><br>"
+                f"<b><span style='font-size: 16px'>Fit {count}</span></b><br>"
                 f"f0:  {f0}<br>"
-                f"Q_r: {Qr}<br>"
-                f"Q_e: {Qe}<br>"
+                f"Q: {Qr}<br>"
+                f"Q_c: {Qe}<br>"
                 f"Q_i: {Qi}<br>"
             )
             
-            out+=f"{file.name}: \nf0={f0}\nQ={Qr}\nQ_c={Qe}\nQ_i={Qi}\n"
+            out+=f"yes: \nf0={f0}\nQ={Qr}\nQ_c={Qe}\nQ_i={Qi}\n"
 
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
                     y=zfit,
                     mode='lines',
                     name=legend_label,
-                    legendgroup=f'fit {count} {file.name}',
+                    legendgroup=f'fit {count}',
                     line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
                     opacity=1
                 ),row=index,col=1)
@@ -505,34 +514,34 @@ if __name__ == "__main__":
                     x=freq_tmp,
                     y=20* np.log10((np.abs(S21_func_linear(freq_tmp,*pinit)))),
                     mode='lines',
-                    name=f'initial guess:{count} {file.name}',
-                    legendgroup=f'{index}_initial',
+                    name=f'initial guess:{count}',
+                    legendgroup=f'{count}_initial',
                     line=dict(color=f'rgb({int(rgb[0]*128)}, {int(rgb[1]*128)}, {int(rgb[2]*128)})', width=1.5),
                     opacity=1
                 ),row=index,col=1)   
             
-            IQ = S21_func_linear(freq_tmp,*popt)
-            I=IQ.real
-            Q=IQ.imag
-            fig.add_trace(go.Scattergl(
-                x=I,
-                y=Q,
-                legendgroup=f'opt circle {file.name} {count}',
-                mode='lines',
-                name=f"opt circle {file.name} {count}",
-                line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
-                opacity=0.7
-            ),row=len(files)+index,col=1) 
+            # IQ = S21_func_linear(freq_tmp,*popt)
+            # I=IQ.real
+            # Q=IQ.imag
+            # fig.add_trace(go.Scattergl(
+            #     x=I,
+            #     y=Q,
+            #     legendgroup=f'opt circle {count}',
+            #     mode='lines',
+            #     name=f"opt circle {count}",
+            #     line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
+            #     opacity=0.7
+            # ),row=count,col=1) 
             
-            fig.update_yaxes(
-                scaleanchor=f"x{len(files)+index}",
-                scaleratio=1,
-                row=len(files)+index, col=1
-            )
-            fig.update_xaxes(title_text="Real (I)", row=len(files)+index, col=1)
-            fig.update_yaxes(title_text="Imag (Q)", row=len(files)+index, col=1)
+            # fig.update_yaxes(
+            #     scaleanchor=f"x{len(files)+index}",
+            #     scaleratio=1,
+            #     row=count, col=1
+            # )
+            # fig.update_xaxes(title_text="Real (I)", row=count, col=1)
+            # fig.update_yaxes(title_text="Imag (Q)", row=count, col=1)
 
-    height_val = 1000 * len(files)
+    height_val = 900 
 
     if height_val <900:
         height_val=900

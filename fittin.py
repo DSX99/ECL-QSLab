@@ -382,7 +382,7 @@ if __name__ == "__main__":
     fig = go.Figure()
 
     fig = make_subplots(
-        rows=2*len(files), cols=1,
+        rows=3*len(files), cols=1,
         shared_xaxes=False,
         vertical_spacing=0.02,
         subplot_titles=file_names+file_names
@@ -392,8 +392,7 @@ if __name__ == "__main__":
     
     for index, file in enumerate(files, start=1):
         ntwk = rf.Network(file)
-        freq = ntwk.f 
-        print(type(freq))
+        freq = ntwk.f
         mag = ntwk.s_mag[:, 1, 0]
         magn_dB = ntwk.s_db[:, 1, 0] 
         phase = ntwk.s_rad_unwrap[:, 1, 0]
@@ -445,8 +444,10 @@ if __name__ == "__main__":
             freq_tmp = freq[point_low:point_high]
             phase_temp = phase[point_low:point_high]
 
-            re = np.real(mag[point_low:point_high])
-            im = np.imag(mag[point_low:point_high])
+            s21 = mag*np.exp(1j*phase)
+
+            re = np.real(s21[point_low:point_high])
+            im = np.imag(s21[point_low:point_high])
             
             fig.add_trace(go.Scattergl(
                 x=re,
@@ -456,7 +457,7 @@ if __name__ == "__main__":
                 name=f"raw circle {file.name} {count}",
                 line=dict(color='black', width=1.5),
                 opacity=0.7
-            ),row=len(files)+index,col=1)
+            ),row=2*len(files)+index,col=1)
             
             re_mark = np.abs(mag[point]) * np.cos(phase[point])
             im_mark = np.abs(mag[point]) * np.sin(phase[point])
@@ -471,11 +472,13 @@ if __name__ == "__main__":
                     symbol='diamond',
                     line=dict(width=2, color='White')
                 )
-            ),row=len(files)+index,col=1)
+            ),row=2*len(files)+index,col=1)
                 
             f0, Qi, Qe, Qr, zfit, popt, pcov, resid, pinit = do_fit_linear(freq_tmp,re,im,f0=freq_tmp[int(len(freq_tmp)/2)])
             
-            zfit = 20 * np.log10((np.abs(zfit)))
+            print(popt)
+            
+            fit = S21_func_linear(freq_tmp,*popt)
             
             hue = (count - 1) * (180 / max(1, num_traces - 1)) 
             # Convert HSL to RGB (Saturation 0.8, Lightness 0.5 for vibrant colors)
@@ -484,8 +487,8 @@ if __name__ == "__main__":
             legend_label = (
                 f"<b><span style='font-size: 16px'>Fit {count} for {file.name}</span></b><br>"
                 f"f0:  {f0}<br>"
-                f"Q_r: {Qr}<br>"
-                f"Q_e: {Qe}<br>"
+                f"Q: {Qr}<br>"
+                f"Q_c: {Qe}<br>"
                 f"Q_i: {Qi}<br>"
             )
             
@@ -493,13 +496,33 @@ if __name__ == "__main__":
 
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
-                    y=zfit,
+                    y=20*np.log10(np.abs(fit)),
                     mode='lines',
                     name=legend_label,
                     legendgroup=f'fit {count} {file.name}',
                     line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
                     opacity=1
                 ),row=index,col=1)
+            
+            fig.add_trace(go.Scattergl(
+                    x=freq_tmp,
+                    y=np.angle(s21),
+                    mode='lines',
+                    name=f'phase {count} {file.name}',
+                    legendgroup=f'phase {count} {file.name}',
+                    line=dict(color=f'black', width=1.5),
+                    opacity=1
+                ),row=len(file_names)+index,col=1)
+            
+            fig.add_trace(go.Scattergl(
+                    x=freq_tmp,
+                    y=np.angle(fit),
+                    mode='lines',
+                    name=f'phase fit {count} {file.name}',
+                    legendgroup=f'phase fit {count} {file.name}',
+                    line=dict(color=f'red', width=1.5),
+                    opacity=1
+                ),row=len(file_names)+index,col=1)
             
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
@@ -511,7 +534,7 @@ if __name__ == "__main__":
                     opacity=1
                 ),row=index,col=1)   
             
-            IQ = S21_func_linear(freq_tmp,*popt)
+            IQ = fit
             I=IQ.real
             Q=IQ.imag
             fig.add_trace(go.Scattergl(
@@ -522,15 +545,15 @@ if __name__ == "__main__":
                 name=f"opt circle {file.name} {count}",
                 line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
                 opacity=0.7
-            ),row=len(files)+index,col=1) 
+            ),row=2*len(files)+index,col=1) 
             
             fig.update_yaxes(
-                scaleanchor=f"x{len(files)+index}",
+                scaleanchor=f"x{2*len(files)+index}",
                 scaleratio=1,
-                row=len(files)+index, col=1
+                row=2*len(files)+index, col=1
             )
-            fig.update_xaxes(title_text="Real (I)", row=len(files)+index, col=1)
-            fig.update_yaxes(title_text="Imag (Q)", row=len(files)+index, col=1)
+            fig.update_xaxes(title_text="Real (I)", row=2*len(files)+index, col=1)
+            fig.update_yaxes(title_text="Imag (Q)", row=2*len(files)+index, col=1)
 
     height_val = 1000 * len(files)
 
