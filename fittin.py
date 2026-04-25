@@ -504,9 +504,12 @@ if __name__ == "__main__":
                     opacity=1
                 ),row=index,col=1)
             
+            
+            print(len(freq_tmp),len(np.angle(s21)))
+            
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
-                    y=np.angle(s21),
+                    y=phase_temp,
                     mode='lines',
                     name=f'phase {count} {file.name}',
                     legendgroup=f'phase {count} {file.name}',
