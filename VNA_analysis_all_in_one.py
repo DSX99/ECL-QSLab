@@ -1006,7 +1006,7 @@ if __name__ == "__main__":
                     
                     f0, Qi, Qe, Qr, zfit, popt, pcov, resid, pinit = do_fit_linear(freq_tmp,re,im,f0=freq_tmp[int(len(freq_tmp)/2)])
                     
-                    zfit = 10 * np.log10(20 * (np.abs(zfit)) ** 2)
+                    zfit = 20 * np.log10((np.abs(zfit)) ** 2)
                     
                     hue = (count - 1) * (180 / max(1, num_traces - 1)) 
                     # Convert HSL to RGB (Saturation 0.8, Lightness 0.5 for vibrant colors)
