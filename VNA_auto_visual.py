@@ -45,6 +45,9 @@ class InstrumentWorker(QThread):
                 
                 atexit.register(cleanup)
                 
+                self.inst.write(":MMEMory:STORe:SNP:FORMat 'RI'")
+                self.inst.write(":CALCulate1:PARameter1:DEFine 'S21'")
+                
             elif self.task_type == "work_dir":
                 self.working_dir(*self.params)
             elif self.task_type == "freq_sweep":
@@ -84,6 +87,9 @@ class InstrumentWorker(QThread):
             file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
             with open(f"./{self.folder_name}/{file}", "wb") as f:
                 f.write(file_data)
+        print(self.folder_name)
+        self.inst.write(f':MMEMory:RDIRectory "/local/auto/{self.folder_name}"')
+        self.response_received.emit("Deleted Folder")
         self.inst.timeout = 30e3
             
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
@@ -145,7 +151,7 @@ class InstrumentWorker(QThread):
             try:
                 self.inst.close()
             except Exception as e:
-                self.error_occurred(f"{e}")
+                self.error_occurred(f"{e} in deletion of worker")
 
 #data parser from some csv
 class CSVWorker(QObject):
@@ -409,9 +415,6 @@ class SciControlApp(QMainWindow):
             self.console.append(formatted_text)
             
     def inst_init(self):
-        if hasattr(self, 'worker'):
-            self.log("Instrument already initiated (restart code, i will add this feature later)", color="orange")
-            return
         try:
             if hasattr(self, 'worker'):
                 del self.worker
@@ -444,7 +447,7 @@ class SciControlApp(QMainWindow):
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
         self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        self.target = self.target +f"_{self.current_temp}mK"
+        self.target = self.target +f"_{self.current_temp}mK_{self.current_task[1]}-{self.current_task[2]}GHz_{self.current_task[0]}"
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir",self.target)
         self.worker.start()
