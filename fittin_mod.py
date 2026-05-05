@@ -324,7 +324,9 @@ def do_fit_linear(freq, re, im, p0=None, f0=None):
         Qc_re = Q * 2
         Qc_im = 0
         p0 = (f0, A, D, phi, Qc_re, Qc_im, Q)
-
+        
+    lower = [0, 0, 0, -np.inf,0,0,0]
+    upper = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
     pinit=p0
 
     ydata = np.hstack((re, im))
@@ -333,7 +335,7 @@ def do_fit_linear(freq, re, im, p0=None, f0=None):
     weights = 1.0 / np.abs(z - np.min(np.abs(z)) + 0.1)
     
     try:
-        popt, pcov = optimize.curve_fit(model, freq, ydata, p0=p0, sigma=1/np.hstack((weights, weights)))  # ,bounds = (0,np.inf)
+        popt, pcov = optimize.curve_fit(model, freq, ydata, p0=p0, sigma=1/np.hstack((weights, weights)),bounds = (lower,upper))  # ,bounds = (0,np.inf)
     except RuntimeError:
         popt = [1,1,1,1,1,1,1]
         pcov=[1,1,1]
@@ -384,8 +386,8 @@ if __name__ == "__main__":
     fig = make_subplots(
         rows=1, cols=1,
         shared_xaxes=False,
-        vertical_spacing=0.02,
-        subplot_titles=file_names+file_names
+        vertical_spacing=0.02
+        # subplot_titles=[f"Zhandos'_MKID_7.15-7.55GHz_150mK_fitting"]
     )
     
     out=[]
@@ -421,8 +423,8 @@ if __name__ == "__main__":
             opacity=0.7
         ),row=index,col=1)
         
-        fig.update_xaxes(title_text="Freq", tickformat=".7s",ticksuffix="Hz", row=index, col=1)
-        fig.update_yaxes(title_text="S21(dB)", row=index, col=1)
+        fig.update_xaxes(title_text="Freq", tickformat=".7s",ticksuffix="Hz", row=index, col=1, title_font=dict(size=26), tickfont=dict(size=22))
+        fig.update_yaxes(title_text="S21(dB)", row=index, col=1, title_font=dict(size=26), tickfont=dict(size=22))
         
         marker_x, marker_y = find_peaks(freq,magn_dB ,window_size= 50 ,base_freq=1e7, verbose=1)
         print("Markers")
@@ -486,7 +488,7 @@ if __name__ == "__main__":
             
             zfit = 20 * np.log10((np.abs(zfit)))
             
-            hue = (count - 1) * (180 / max(1, num_traces - 1)) 
+            hue = (count - 1) * (180 / max(1, num_traces - 1)) *0.5
             # Convert HSL to RGB (Saturation 0.8, Lightness 0.5 for vibrant colors)
             rgb = colorsys.hls_to_rgb(hue / 360, 0.5, 0.8)
             
@@ -498,7 +500,7 @@ if __name__ == "__main__":
                 f"Q_i: {Qi}<br>"
             )
             
-            out+=f"yes: \nf0={f0}\nQ={Qr}\nQ_c={Qe}\nQ_i={Qi}\n"
+            out+=f"fit {count}: \nf0={f0}\nQ={Qr}\nQ_c={Qe}\nQ_i={Qi}\n"
 
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
@@ -506,19 +508,19 @@ if __name__ == "__main__":
                     mode='lines',
                     name=legend_label,
                     legendgroup=f'fit {count}',
-                    line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
+                    line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=3),
                     opacity=1
                 ),row=index,col=1)
             
-            fig.add_trace(go.Scattergl(
-                    x=freq_tmp,
-                    y=20* np.log10((np.abs(S21_func_linear(freq_tmp,*pinit)))),
-                    mode='lines',
-                    name=f'initial guess:{count}',
-                    legendgroup=f'{count}_initial',
-                    line=dict(color=f'rgb({int(rgb[0]*128)}, {int(rgb[1]*128)}, {int(rgb[2]*128)})', width=1.5),
-                    opacity=1
-                ),row=index,col=1)   
+            # fig.add_trace(go.Scattergl(
+            #         x=freq_tmp,
+            #         y=20* np.log10((np.abs(S21_func_linear(freq_tmp,*pinit)))),
+            #         mode='lines',
+            #         name=f'initial guess:{count}',
+            #         legendgroup=f'{count}_initial',
+            #         line=dict(color=f'rgb({int(rgb[0]*128)}, {int(rgb[1]*128)}, {int(rgb[2]*128)})', width=1.5),
+            #         opacity=1
+            #     ),row=index,col=1)   
             
             # IQ = S21_func_linear(freq_tmp,*popt)
             # I=IQ.real
@@ -548,13 +550,22 @@ if __name__ == "__main__":
 
     fig.update_layout(
         height= height_val,
-        title=f"Fitting test",
+        showlegend=False,
+        legend=dict(
+            font=dict(
+                size=18  # Set your desired font size here
+            )
+        ),
+        title={
+        'text':f"Zhandos' MKID New Holder 150mK Fiting",
+        'font': {'size':24}
+    },
         template="ggplot2" # Often easier on the eyes for RF data
     )
 
     print("".join(out))
     
     fig.show()   
-    # fig.write_html(f"fitting_test.html")
+    fig.write_html(f"fitting_freq.html")
         
         

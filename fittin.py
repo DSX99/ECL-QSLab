@@ -476,8 +476,6 @@ if __name__ == "__main__":
                 
             f0, Qi, Qe, Qr, zfit, popt, pcov, resid, pinit = do_fit_linear(freq_tmp,re,im,f0=freq_tmp[int(len(freq_tmp)/2)])
             
-            print(popt)
-            
             fit = S21_func_linear(freq_tmp,*popt)
             
             hue = (count - 1) * (180 / max(1, num_traces - 1)) 
@@ -503,9 +501,6 @@ if __name__ == "__main__":
                     line=dict(color=f'rgb({int(rgb[0]*255)}, {int(rgb[1]*255)}, {int(rgb[2]*255)})', width=1.5),
                     opacity=1
                 ),row=index,col=1)
-            
-            
-            print(len(freq_tmp),len(np.angle(s21)))
             
             fig.add_trace(go.Scattergl(
                     x=freq_tmp,
@@ -572,6 +567,6 @@ if __name__ == "__main__":
     print("".join(out))
     
     fig.show()   
-    # fig.write_html(f"fitting_test.html")
+    fig.write_html(f"fitting_test.html")
         
         
