@@ -310,10 +310,10 @@ class CryobossWorker(QObject):
                 raise RuntimeError("Temp rose above 5 during verification")
 
             # If we reach here, temp has changed and is < 5. Proceed!
-            self.connection.send(b"Start MC = 1")
+            self.connection.send(b"Start MC = True")
             reciv = self.connection.recv(4096)
             
-            if reciv == b"ACK Start MC = TRUE":
+            if reciv == b"ACK start mc = true":
                 self.cycle_started_signal.emit(True)
             else:
                 raise Exception(f"Cryoboss rejected start: {reciv}")
@@ -739,6 +739,8 @@ class SciControlApp(QMainWindow):
         
     def send_task(self, got_temp):
         self.current_temp=got_temp
+        new_text = f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}"
+        self.temp_label.setText(new_text)
         try:
             self.worker.finished_task.disconnect(self.print_wrapper)
         except (TypeError, RuntimeError):
