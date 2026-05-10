@@ -161,66 +161,97 @@ class CryobossWorker(QObject):
     temperature_signal = pyqtSignal(float)
     debug_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
+    cycle_started_signal = pyqtSignal(bool)
 
     def __init__(self, address):
         super().__init__()
-        self.mk_temp= None
-        self.address= address
+        self.address = address
+        self.mk_temp = None
+        self.magnet_temp = 0.0
+        self.connection = None
+        self.verifying_cycle = False
+        self.temp_at_start_request = None
+        
+    def initialize_socket(self):
+        """Perform network setup inside the thread, not the constructor."""
         try:
             self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.connection.connect((address, 60770))
+            self.connection.settimeout(3.0) 
+            self.connection.connect((self.address, 60770))
             
-            def cleanup():
-                    print("Atexit: Closing the Cryoboss conenction...")
-                    self.connection.close()
-                
-            atexit.register(cleanup)
+            atexit.register(self.cleanup)
+            self.start_monitoring()
         except Exception as e:
-            self.error_signal.emit(f"Error in CryobossWorker: {e}")
-            try:
-                self.connection.close()
-            except Exception as e:
-                pass
-            
-        self.start_monitoring()
+            self.error_signal.emit(f"Connection Error: {e}")
 
     def start_monitoring(self):
-        self.check_timer = QTimer()
+        self.check_timer = QTimer(self)
         self.check_timer.timeout.connect(self.process_data)
-        self.check_timer.start(1000) # Check every 2 seconds        
-        print(f"Monitoring Cryoboss")
+        self.check_timer.start(2000) 
+        print("Monitoring Cryoboss")
         self.debug_signal.emit("Monitoring data from Cryoboss")
         
     def process_data(self):
         try:
+            # Query FAA temp (50mK)
             self.connection.send(b"Temps.FAA_Display = ?")
             recv = self.connection.recv(4096)
             self.mk_temp = float(recv.decode().split("=")[-1].strip())
             self.temperature_signal.emit(self.mk_temp) 
+            
+            # Query Magnet Temp
             self.connection.send(b"Temps.Magnet_T = ?")
             recv = self.connection.recv(4096)
             self.magnet_temp = float(recv.decode().split("=")[-1].strip())   
+            
+            if self.verifying_cycle:
+                self.verify_and_execute()
+                
         except Exception as e:
-            self.error_signal.emit(f"Error in monitoring temperature: {str(e)}")
+            self.error_signal.emit(f"Network error: {str(e)}")
 
-    def start_cycle(self):
-        
-        try: 
-            assert self.magnet_temp < 5, "temperature too high(>5) for magnet to start (1)"
-            temp = self.magnet_temp
-            time.sleep(5)
-            assert self.magnet_temp < 5, "temperature too high(>5) for magnet to start (2)"
-            assert self.magnet_temp != temp, "probably data is not coming from cryoboss, or you are lucky"
-                        
-            # should add System Status checks
-                        
+    def start_cycle_request(self):
+        """Called by GUI. Instead of sleeping, we set a flag."""
+        if self.magnet_temp >= 5:
+            self.error_signal.emit("Temp too high (>5) to start cycle.")
+            self.cycle_started_signal.emit(False)
+            return
+
+        self.temp_at_start_request = self.magnet_temp
+        self.verifying_cycle = True
+
+    def verify_and_execute(self):
+        """This runs on the next timer tick (usually 1-2 seconds later)."""
+        try:
+            # Check the same conditions you had in your sleep logic
+            assert self.magnet_temp < 5, "Temp rose above 5 during verification"
+            
+            # If the temp hasn't changed at all, the hardware might be frozen
+            if self.magnet_temp == self.temp_at_start_request:
+                self.debug_signal.emit("Temp hasn't changed yet, waiting for next tick...")
+                return # Keep waiting; don't reset the flag yet
+
+            # If we reach here, temp has changed and is < 5. Proceed!
             self.connection.send(b"Start MC = 1")
             reciv = self.connection.recv(4096)
             
-            assert reciv == b"ACK Start MC = TRUE", "cycle is not started from the cryoboss side"
+            if reciv == b"ACK Start MC = TRUE":
+                self.cycle_started_signal.emit(True)
+            else:
+                raise Exception(f"Cryoboss rejected start: {reciv}")
+            
+            # Reset the state
+            self.verifying_cycle = False
             
         except Exception as e:
-            self.error_signal.emit(f"Error in starting cycle: {str(e)}")
+            self.verifying_cycle = False
+            self.error_signal.emit(str(e))
+            self.cycle_started_signal.emit(False)
+        
+    def cleanup(self):
+        if self.connection:
+            print("Closing the Cryoboss conenction...")
+            self.connection.close()
 
 class TaskBox(QFrame):
     """A single custom box for a task"""
@@ -346,6 +377,8 @@ class SciControlApp(QMainWindow):
         self.current_task=0
         self.current_temp=None
         self.starting_temp=None
+        self.cooling=0
+        self.is_starting_cycle = 0
         
         self.setWindowTitle("SCPI Instrument Controller")
         self.resize(1500, 900)
@@ -454,10 +487,17 @@ class SciControlApp(QMainWindow):
             self.worker.response_received.connect(self.handle_response)
             self.worker.error_occurred.connect(self.handle_error)
             self.worker.start()
-            self.cryoworker = CryobossWorker(f"{self.sensor_data.text()}")
+            
+            
+            self.cryo_thread = QThread()
+            self.cryoworker = CryobossWorker(self.sensor_data.text())
+            self.cryoworker.moveToThread(self.cryo_thread)
+            self.cryo_thread.started.connect(self.cryoworker.initialize_socket)
             self.cryoworker.debug_signal.connect(self.handle_response)
             self.cryoworker.error_signal.connect(self.handle_error)
             self.cryoworker.temperature_signal.connect(self.send_task)
+            self.cryoworker.cycle_started_signal.connect(self.handle_cycle_status)
+            self.cryo_thread.start()
             
         except Exception as e:
             self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in inst_init")
@@ -530,22 +570,40 @@ class SciControlApp(QMainWindow):
         try:
             if not self.tasks:
                 return
-            for index, task in self.tasks:
-                if ((self.current_temp*1000)<=float(task[-1]) and (self.current_temp*1000)>=float(task[-2]) and not self.worker.isRunning()):
-                    self.current_task=task
-                    if(task[0] == "freq_sweep"):
-                        self.worker.finished_task.connect(self.trigger_freq_sweep)
-                    elif(task[0] == "power_sweep"):
-                        self.worker.finished_task.connect(self.trigger_power_sweep)
-                    else:
-                        self.handle_error(f"Unknown task: {self.tasks[0]}")
-                    self.trigger_folder_creation()
-                    self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp}mK")
-                    self.starting_temp = self.current_temp
-                    self.scheduler_ui.remove_task_index(index)
+            if(not self.cooling):
+                for index, task in enumerate(self.tasks):
+                    if ((self.current_temp*1000)<=float(task[-1]) and (self.current_temp*1000)>=float(task[-2]) and not self.worker.isRunning()):
+                        self.current_task=task
+                        if(task[0] == "freq_sweep"):
+                            self.worker.finished_task.connect(self.trigger_freq_sweep)
+                        elif(task[0] == "power_sweep"):
+                            self.worker.finished_task.connect(self.trigger_power_sweep)
+                        else:
+                            self.handle_error(f"Unknown task: {self.tasks[0]}")
+                        self.trigger_folder_creation()
+                        self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp}mK")
+                        self.starting_temp = self.current_temp
+                        self.scheduler_ui.remove_task_index(index)
+                    
+            if(not self.worker.isRunning() and len(self.tasks)>0 and not self.cooling and not self.is_starting_cycle):
+                self.handle_response("Starting cooling cycle")
+                self.is_starting_cycle = True
+                QTimer.singleShot(0, self.cryoworker.start_cycle_request)
+                    
+            if(self.current_temp<0.150):
+                self.cooling=0
                 
         except Exception as e:
             self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in send_task")
+            
+    def handle_cycle_status(self, success):
+        self.is_starting_cycle = False
+        if success:
+            self.log("Cryoboss cycle started successfully. Cooling...", color="green")
+            self.cooling = 1
+        else:
+            self.handle_error("Cryoboss failed to start cycle.")
+            self.cooling = 0
         
     def sync_task_list(self, index):
         """Syncs the internal list when a task is removed from the UI"""
