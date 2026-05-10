@@ -1,17 +1,42 @@
 import sys
 import os
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QScrollArea, QFrame,
-                            QHBoxLayout, QPushButton, QLabel, QLineEdit, QTextEdit, QCheckBox)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QFileSystemWatcher, QObject
-import pyqtgraph as pg
+from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QScrollArea, QFrame,
+    QHBoxLayout, QPushButton, QLabel, QLineEdit, QTextEdit, QCheckBox
+)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QObject
+
+from vna_plot_tools import make_both_plots
 import pyvisa
 import numpy as np
 import time
-import csv  
 import atexit
 import socket
 
-#worker for async work
+def format_number(value):
+    """
+    Format numbers nicely for folder names.
+    6.0 -> 6
+    6.5 -> 6.5
+    """
+    value = float(value)
+
+    if value.is_integer():
+        return str(int(value))
+
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def format_temp_mk(value):
+    """
+    Round temperature to nearest decimal.
+    133.36 -> 133.4mK
+    """
+    return f"{float(value):.1f}mK"
+
+# worker for async work
 class InstrumentWorker(QThread):
     response_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
@@ -23,28 +48,27 @@ class InstrumentWorker(QThread):
         self.task_type = None
         self.params = {}
         self.inst = None
-        self.VNA_dir = None
         self.download_folder_name = None
         
     def create_task(self, task_type, *args):
-        self.task_type=task_type
-        self.params= args
+        self.task_type = task_type
+        self.params = args
         print(self.params)
-        
+
     def run(self):
         try:
             if self.task_type == "init":
                 rm = pyvisa.ResourceManager()
                 print(self.resource_name)
                 self.inst = rm.open_resource(self.resource_name, read_termination='\n')
-                self.inst.timeout=15e3
+                self.inst.timeout = 15e3
                 id = self.inst.query('*IDN?')
                 self.response_received.emit(id)
-                
+
                 def cleanup():
-                    print("Atexit: Closing the conenction...")
+                    print("Atexit: Closing the connection...")
                     self.inst.close()
-                
+
                 atexit.register(cleanup)
                 
                 self.inst.write(":MMEMory:STORe:SNP:FORMat 'RI'")
@@ -58,103 +82,161 @@ class InstrumentWorker(QThread):
                 self.power_sweep(*self.params)
             elif self.task_type == "file_download":
                 self.file_download()
+
             self.finished_task.emit()
+
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in run: {type(e).__name__} - {e} in run")
+            self.error_occurred.emit(
+                f"An unexpected error occurred in run: {type(e).__name__} - {e} in run"
+            )
 
     def working_dir(self, name):
         try:
-            check = self.inst.query(':MMEMory:CATalog:DIR? "/local"')
-            if(not (name in check)):
+            check = self.inst.query(':MMEMory:CATalog:DIR? "/local/auto"')
+            if not (name in check):
                 self.inst.write(f':MMEM:MDIR "/local/auto/{name}"')
+
             self.inst.write(f':MMEMory:CDIRectory "/local/auto/{name}"')
-            path = self.inst.query(':MMEM:CDIR?').replace('"','')
+            path = self.inst.query(':MMEM:CDIR?').replace('"', '')
             self.response_received.emit(f"Working dir:{path}")
-            self.VNA_dir = name
         except pyvisa.errors.VisaIOError as e:
             self.error_occurred.emit(f"VISA IO Error in working_dir: {e.description} in working_dir")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in working_dir: {type(e).__name__} - {e} in working_dir")
-            
+            self.error_occurred.emit(
+                f"An unexpected error occurred in working_dir: {type(e).__name__} - {e} in working_dir"
+            )
+
     def file_download(self):
-        self.inst.chunk_size = 20 * 1024 * 1024
-        self.inst.timeout = 100e3
-        files = self.inst.query(':MMEMory:CATalog?')
-        files = files.split(",")
-        os.makedirs(self.download_folder_name,exist_ok=True)
-        for file in files:
-            file = file.strip('"\x00 \n\r')
-            if not file:
-                continue
-            self.response_received.emit(f"Downloading {file}")
-            file_data = self.inst.query_binary_values(f':MMEMory:TRANsfer? "{file}"', datatype='B', container=bytes)
-            with open(f"./{self.download_folder_name}/{file}", "wb") as f:
-                f.write(file_data)
-        print(f"downloaded to:{self.download_folder_name}")
-        self.inst.write(f':MMEMory:RDIRectory "/local/auto/{self.VNA_dir}"')
-        self.response_received.emit("Deleted Folder")
-        self.inst.timeout = 30e3
-            
+        try:
+            self.inst.chunk_size = 20 * 1024 * 1024
+            self.inst.timeout = 100e3
+
+            files = self.inst.query(':MMEMory:CATalog?')
+            files = files.split(",")
+
+            folder_path = Path(self.download_folder_name)
+            folder_path.mkdir(parents=True, exist_ok=True)
+
+            for file in files:
+                file = file.strip('"\x00 \n\r')
+
+                if not file:
+                    continue
+
+                if not file.lower().endswith(".s2p"):
+                    continue
+
+                self.response_received.emit(f"Downloading {file}")
+
+                file_data = self.inst.query_binary_values(
+                    f':MMEMory:TRANsfer? "{file}"',
+                    datatype='B',
+                    container=bytes
+                )
+
+                output_file = folder_path / file
+
+                with open(output_file, "wb") as f:
+                    f.write(file_data)
+
+            self.inst.timeout = 30e3
+
+        except pyvisa.errors.VisaIOError as e:
+            self.error_occurred.emit(f"VISA IO Error in file_download: {e} in file_download")
+        except Exception as e:
+            self.error_occurred.emit(
+                f"An unexpected error occurred in file_download: {type(e).__name__} - {e} in file_download"
+            )
+
     def do_scan(self, start_freq, finish_freq, if_freq, power, point, name):
         start_time = time.perf_counter()
         try:
             self.inst.write(f":SENSe1:SWEep:POINts {point}")
             points = self.inst.query(":SENSe1:SWEep:POINts?")
+
             self.inst.write(f":SOURce1:POWer {power}")
             pow = self.inst.query(":SOURce1:POWer?")
-            self.inst.write(f':SENSe1:FREQuency:STARt {start_freq*1e9}')
-            self.inst.write(f':SENSe1:FREQuency:STOP {finish_freq*1e9}')
+
+            self.inst.write(f':SENSe1:FREQuency:STARt {start_freq * 1e9}')
+            self.inst.write(f':SENSe1:FREQuency:STOP {finish_freq * 1e9}')
+
             start = (self.inst.query(":SENSe1:FREQuency:STARt?")).strip('\x00').strip()
             finish = (self.inst.query(":SENSe1:FREQuency:STOP?")).strip('\x00').strip()
+
             self.inst.write(f':SENSe1:BANDwidth {if_freq}')
             got_if_freq = self.inst.query(":SENSe1:BANDwidth?")
-            
+
             self.inst.write("TRIG:SOUR BUS")
-            
-            self.response_received.emit(f"doing a scan for {str(points)} points, from {float(start)/1e9}ghz to {float(finish)/1e9}ghz with IF frequency {str(got_if_freq)}hz and power {pow}dB")
-            
+
+            self.response_received.emit(
+                f"doing a scan for {str(points)} points, "
+                f"from {float(start) / 1e9}ghz to {float(finish) / 1e9}ghz "
+                f"with IF frequency {str(got_if_freq)}hz and power {pow}dB"
+            )
+
             self.inst.write("TRIG:SING")
-            
+
             self.response_received.emit("waiting the scan...")
-            
-            self.inst.timeout = 200e3 # 200 sec
+
+            self.inst.timeout = 200e3
             self.inst.query("*OPC?")
             self.inst.timeout = 25e3
-            
+
             self.response_received.emit("scan done")
-            
-            if(name==None):
-                self.inst.write(f':MMEMory:STORe:SNP "{float(start)/1e9}GHz-{float(finish)/1e9}GHz-{float(power)}dB.s2p"')
+
+            if name is None:
+                self.inst.write(
+                    f':MMEMory:STORe:SNP "{float(start) / 1e9}GHz-{float(finish) / 1e9}GHz-{float(power)}dB.s2p"'
+                )
             else:
                 self.inst.write(f':MMEMory:STORe:SNP "{name}.s2p"')
-                
+
             self.response_received.emit("scan saved")
-            
+
             end_time = time.perf_counter()
             self.response_received.emit(f"Elapsed time: {end_time - start_time:.6f} seconds")
-            
+
         except pyvisa.errors.VisaIOError as e:
             self.error_occurred.emit(f"VISA IO Error in do_scan: {e} in do_scan")
-            self.error_occurred.emit(f"timeout was {self.inst.timeout/1e3} sec in do_scan")
+            self.error_occurred.emit(f"timeout was {self.inst.timeout / 1e3} sec in do_scan")
         except Exception as e:
-            self.error_occurred.emit(f"An unexpected error occurred in do_scan: {type(e).__name__} - {e} in do_scan")
+            self.error_occurred.emit(
+                f"An unexpected error occurred in do_scan: {type(e).__name__} - {e} in do_scan"
+            )
 
     def freq_sweep(self, start_freq, stop_freq, scan_amount, if_freq, power, points, name=None):
-        step = (float(stop_freq)-float(start_freq))/int(scan_amount)
-        for i in range(int(scan_amount)):
-            self.do_scan(float(start_freq)+i*step,float(start_freq)+(i+1)*step,if_freq,power,points, name)
-            
+
+        step = (float(stop_freq) - float(start_freq)) / scan_amount
+
+        for i in range(scan_amount):
+            self.do_scan(
+                float(start_freq) + i * step,
+                float(start_freq) + (i + 1) * step,
+                if_freq,
+                power,
+                points,
+                name
+            )
+
     def power_sweep(self, start_freq, stop_freq, scan_amount, if_freq, start_power, stop_power, points, name=None):
-        step = (float(stop_power)-float(start_power))/int(scan_amount)
+        step = (float(stop_power) - float(start_power)) / int(scan_amount)
+
         for i in range(int(scan_amount)):
-            self.do_scan(float(start_freq), float(stop_freq), if_freq, float(start_power)+(i*step), points, name)
-    
-    def __del__ (self):
+            self.do_scan(
+                float(start_freq),
+                float(stop_freq),
+                if_freq,
+                float(start_power) + (i * step),
+                points,
+                name
+            )
+
+    def __del__(self):
         if hasattr(self, 'inst') and self.inst is not None:
             try:
                 self.inst.close()
             except Exception as e:
-                self.error_occurred(f"{e} in deletion of worker")
+                print(f"[cleanup] Error closing instrument: {e}")
 
 #data parser from cryoboss
 class CryobossWorker(QObject):
@@ -224,7 +306,8 @@ class CryobossWorker(QObject):
         """This runs on the next timer tick (usually 1-2 seconds later)."""
         try:
             # Check the same conditions you had in your sleep logic
-            assert self.magnet_temp < 5, "Temp rose above 5 during verification"
+            if self.magnet_temp >= 5:
+                raise RuntimeError("Temp rose above 5 during verification")
             
             # If the temp hasn't changed at all, the hardware might be frozen
             if self.magnet_temp == self.temp_at_start_request:
@@ -250,28 +333,85 @@ class CryobossWorker(QObject):
         
     def cleanup(self):
         if self.connection:
-            print("Closing the Cryoboss conenction...")
+            print("Closing the Cryoboss connection...")
             self.connection.close()
+
+# NEW: worker for automatic plot generation
+class PlotWorker(QThread):
+    response_received = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+    finished_plotting = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.input_folder = None
+        self.sweep_type = None
+        self.output_root = None
+
+    def set_task(self, input_folder, sweep_type, output_root):
+        """
+        Update the values used for the next plotting task.
+
+        This avoids creating a new PlotWorker every time.
+        """
+        self.input_folder = Path(input_folder)
+        self.sweep_type = sweep_type
+        self.output_root = Path(output_root)
+
+    def run(self):
+        try:
+            if self.input_folder is None:
+                raise ValueError("PlotWorker has no input folder. Call set_task() first.")
+
+            if self.sweep_type is None:
+                raise ValueError("PlotWorker has no sweep type. Call set_task() first.")
+
+            if self.output_root is None:
+                raise ValueError("PlotWorker has no output folder. Call set_task() first.")
+
+            created_files = []
+
+            for parameter in ["S21", "S11"]:
+                magnitude_file, phase_file = make_both_plots(
+                    input_folder=self.input_folder,
+                    sweep_type=self.sweep_type,
+                    parameter=parameter,
+                    output_root=self.output_root,
+                    show=False,
+                )
+
+                created_files.append(magnitude_file)
+                created_files.append(phase_file)
+
+            self.response_received.emit("Plot generation finished.")
+
+            for file in created_files:
+                self.response_received.emit(f"Created plot: {file}")
+
+            self.finished_plotting.emit()
+
+        except Exception as e:
+            self.error_occurred.emit(
+                f"Plot generation error: {type(e).__name__} - {e}"
+            )
 
 class TaskBox(QFrame):
     """A single custom box for a task"""
+
     def __init__(self, task_data, order, delete_callback):
         super().__init__()
-        self.task_data = task_data # Store data for easier re-rendering
+        self.task_data = task_data
         self.delete_callback = delete_callback
-        
+
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setObjectName("TaskBox") # Used for specific CSS targeting
-        
-        # Main layout for the box
+        self.setObjectName("TaskBox")
+
         self.main_layout = QHBoxLayout(self)
-        
-        # Label to display task details
+
         self.label = QLabel()
         self.label.setStyleSheet("font-family: 'Courier New'; font-size: 12px;")
         self.update_display_text(order)
-        
-        # Delete button
+
         self.btn_delete = QPushButton("✕")
         self.btn_delete.setFixedSize(24, 24)
         self.btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -282,10 +422,10 @@ class TaskBox(QFrame):
             QPushButton:hover { background-color: #c0392b; }
         """)
         self.btn_delete.clicked.connect(lambda: self.delete_callback(self))
-        
+
         self.main_layout.addWidget(self.label, stretch=1)
         self.main_layout.addWidget(self.btn_delete)
-        
+
         self.setStyleSheet("""
             #TaskBox {
                 background-color: #ffffff;
@@ -296,7 +436,6 @@ class TaskBox(QFrame):
         """)
 
     def update_display_text(self, order):
-        """Helper to set or refresh the text based on its position in the list"""
         if self.task_data[0] == "freq_sweep":
             name, s_freq, f_freq, scan, if_f, pwr, pts, from_temp, to_temp = self.task_data
             power_str = f"POWER: {pwr} dB"
@@ -308,50 +447,47 @@ class TaskBox(QFrame):
             f"[{order:02d}] TYPE: {name.upper()}\n"
             f"     FREQ : {s_freq} GHz -> {f_freq} GHz (IF: {if_f} Hz)\n"
             f"     {power_str}\n"
-            f"     SCAN : {scan} | POINTS: {pts} per scan"
+            f"     SCAN : {scan} | POINTS: {pts} per scan\n"
             f"     FROM_TEMP: {from_temp} mK | TO_TEMP: {to_temp} mK "
         )
         self.label.setText(display_text)
 
+
 class SchedulerDisplay(QScrollArea):
     """The scrollable container for all tasks"""
+
     task_deleted = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
         self.setWidgetResizable(True)
-        
+
         self.container = QWidget()
         self.list_layout = QVBoxLayout(self.container)
         self.list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
+
         self.setWidget(self.container)
 
     def add_task(self, task_params):
         order = self.list_layout.count() + 1
-        # Pass self.remove_task as the callback
         new_task = TaskBox(task_params, order, self.remove_task)
         self.list_layout.addWidget(new_task)
-        
+
     def remove_task(self, task_widget):
-        """Removes the widget from layout, deletes it, and notifies the app"""
-        # 1. Find the index of the widget before removing it
         index = -1
+
         for i in range(self.list_layout.count()):
             if self.list_layout.itemAt(i).widget() == task_widget:
                 index = i
                 break
-        
-        # 2. Perform the UI cleanup
+
         if index != -1:
             self.list_layout.removeWidget(task_widget)
             task_widget.deleteLater()
             self.renumber_tasks()
-            
-            # 3. Emit the signal so SciControlApp can sync its data list
             self.task_deleted.emit(index)
-        
+
     def remove_task_index(self, index):
-        """Removes a task by its index in the layout"""
         if 0 <= index < self.list_layout.count():
             item = self.list_layout.itemAt(index)
             if item:
@@ -360,7 +496,6 @@ class SchedulerDisplay(QScrollArea):
                     self.remove_task(widget)
 
     def renumber_tasks(self):
-        """Loops through remaining widgets to update their [XX] labels"""
         for i in range(self.list_layout.count()):
             item = self.list_layout.itemAt(i)
             if item:
@@ -368,29 +503,33 @@ class SchedulerDisplay(QScrollArea):
                 if isinstance(widget, TaskBox):
                     widget.update_display_text(i + 1)
 
+
 # --- Main Window ---
 class SciControlApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        
+
         self.tasks = []
-        self.current_task=0
-        self.current_temp=None
+        self.current_task = None
+        self.current_temp = None
+        
+        self.script_dir = Path(__file__).resolve().parent
+        self.plot_root = self.script_dir / "plot"
+        self.data_root = self.script_dir / "downloaded_s2p"
+
         self.starting_temp=None
-        self.cooling=0
-        self.is_starting_cycle = 0
+        self.cooling=False
+        self.is_starting_cycle = False
         
         self.setWindowTitle("SCPI Instrument Controller")
         self.resize(1500, 900)
 
-        # UI Elements
         self.top_box = QHBoxLayout()
 
-
-        #buttons (left section)
-    
+        # buttons, left section
         self.left_panel = QWidget()
         self.left_layout = QVBoxLayout(self.left_panel)
+
         self.btn_init = QPushButton("Connect to inst")
         self.addr = QLineEdit("10.1.199.8")
         self.folder_name = QLineEdit("")
@@ -408,15 +547,15 @@ class SciControlApp(QMainWindow):
         self.to_temp = QLineEdit("200")
 
 
-        self.btn_donwload =  QCheckBox("Download data from VNA")
+        self.btn_donwload = QCheckBox("Download data from VNA")
         self.btn_donwload.setChecked(True)
 
         self.btn_freq_sweep = QPushButton("Schedule a freq sweep")
         self.btn_freq_sweep.clicked.connect(self.freq_sweep)
+
         self.btn_power_sweep = QPushButton("Schedule a power sweep")
         self.btn_power_sweep.clicked.connect(self.power_sweep)
-        
-        #left side constructor
+
         self.left_layout.addWidget(QLabel("<b>SCPI Control</b>"))
         self.left_layout.addWidget(QLabel("Enter a VNA addr"))
         self.left_layout.addWidget(self.addr)
@@ -427,7 +566,7 @@ class SciControlApp(QMainWindow):
         self.left_layout.addWidget(self.start_freq)
         self.left_layout.addWidget(QLabel("Frequency finish (in GHz)"))
         self.left_layout.addWidget(self.finish_freq)
-        self.left_layout.addWidget(QLabel("Divide whole frequency in to ... individual scans"))
+        self.left_layout.addWidget(QLabel("Divide whole frequency into ... individual scans"))
         self.left_layout.addWidget(self.scan_amount)
         self.left_layout.addWidget(QLabel("IF freq (in Hz)"))
         self.left_layout.addWidget(self.if_freq)
@@ -444,13 +583,13 @@ class SciControlApp(QMainWindow):
         self.left_layout.addWidget(self.btn_donwload)
         self.left_layout.addWidget(self.btn_freq_sweep)
         self.left_layout.addWidget(self.btn_power_sweep)
-        
-        #console (middle section)
+
+        # console
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setStyleSheet("background-color: #1e1e1e; font-family: monospace;")
 
-        #scheduler + file control (right section)
+        # scheduler + file control
         self.right_panel = QWidget()
         self.right_layout = QVBoxLayout(self.right_panel)
         self.sensor_data = QLineEdit("10.1.197.100") 
@@ -459,29 +598,31 @@ class SciControlApp(QMainWindow):
         
         self.right_layout.addWidget(QLabel("Address of Cryoboss (set it before init)"))
         self.right_layout.addWidget(self.sensor_data)
-        self.right_layout.addWidget(QLabel(f"last temperature at 50mK: {self.current_temp}K"))
+        self.right_layout.addWidget(QLabel(f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}mK"))
         self.right_layout.addWidget(self.scheduler_ui)
 
-        #top constructor
         self.top_box.addWidget(self.left_panel)
         self.top_box.addWidget(self.console)
         self.top_box.addWidget(self.right_panel)
+
         container = QWidget()
         container.setLayout(self.top_box)
         self.setCentralWidget(container)
-        
+
         self.print_wrapper = lambda: self.log("Done downloading")
 
-        
     def log(self, text, color="white"):
-            # We wrap the text in a <span> tag with inline CSS for color
-            formatted_text = f'<span style="color: {color};">{text}</span>'
-            self.console.append(formatted_text)
-            
+        formatted_text = f'<span style="color: {color};">{text}</span>'
+        self.console.append(formatted_text)
+
     def inst_init(self):
         try:
             if hasattr(self, 'worker'):
+                if self.worker.isRunning():
+                    self.worker.quit()
+                    self.worker.wait()
                 del self.worker
+
             self.worker = InstrumentWorker(f"TCPIP0::{self.addr.text()}::5025::SOCKET")
             self.worker.create_task("init")
             self.worker.response_received.connect(self.handle_response)
@@ -499,11 +640,15 @@ class SciControlApp(QMainWindow):
             self.cryoworker.cycle_started_signal.connect(self.handle_cycle_status)
             self.cryo_thread.start()
             
+            self.plot_worker = PlotWorker()
+            self.plot_worker.response_received.connect(self.handle_response)
+            self.plot_worker.error_occurred.connect(self.handle_error)
+            self.plot_worker.finished_plotting.connect(self.handle_plot_finished)
+            
         except Exception as e:
             self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in inst_init")
             del self.worker
-            
-            
+
     def freq_sweep(self):
         self.tasks.append(("freq_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
                                self.start_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
@@ -512,8 +657,8 @@ class SciControlApp(QMainWindow):
         
     def power_sweep(self):
         self.tasks.append(("power_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
-                               self.start_power.text(), self.finish_power.text(), self.from_temp.text(), self.to_temp.text()))
-        self.scheduler_ui.add_task(("power_sweep",self.start_freq.text(), self.points.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
+                               self.start_power.text(), self.finish_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
+        self.scheduler_ui.add_task(("power_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
                                self.start_power.text(), self.finish_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
         
     def trigger_folder_creation(self):
@@ -521,41 +666,77 @@ class SciControlApp(QMainWindow):
         self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
         self.target = self.target +f"_{np.round(self.current_temp,2)}mK_{self.current_task[1]}-{self.current_task[2]}GHz_{self.current_task[0]}"
         self.log(f"Initializing working directory: {self.target}...")
-        self.worker.create_task("work_dir",self.target)
+        self.worker.create_task("work_dir", self.target)
         self.worker.start()
-        
+
     def trigger_file_download(self):
         self.worker.finished_task.disconnect(self.trigger_file_download)
-        self.worker.download_folder_name = self.target.split("_")[0] +f"_{np.round(self.starting_temp,2)}mK-{np.round(self.current_temp,2)}mK_{self.current_task[1]}-{self.current_task[2]}GHz_{self.current_task[0]}"
+
+        self.download_folder = self.data_root / (self.target.split("_")[0]+ f"_{format_temp_mk(self.starting_temp*1000)}mK-{format_temp_mk(self.current_temp*1000)}mK")
+        self.worker.download_folder_name = self.download_folder
+
         self.worker.create_task("file_download")
-        self.worker.finished_task.connect(self.print_wrapper)
+        self.worker.finished_task.connect(self.trigger_plot_generation)
         self.worker.start()
-        
+
+    def trigger_plot_generation(self):
+        try:
+            self.worker.finished_task.disconnect(self.trigger_plot_generation)
+        except (TypeError, RuntimeError):
+            pass
+
+        self.log("Done downloading.", color="lightgreen")
+        self.log("Generating HTML plots...", color="lightblue")
+
+        if self.current_task[0] == "freq_sweep":
+            sweep_type = "frequency"
+        elif self.current_task[0] == "power_sweep":
+            sweep_type = "power"
+        else:
+            self.handle_error(f"Unknown sweep type: {self.current_task[0]}")
+            return
+
+        if self.plot_worker.isRunning():
+            self.handle_error("Plot worker is already running. Skipping new plot task.")
+            return
+
+        self.plot_worker.set_task(
+            input_folder=self.download_folder,
+            sweep_type=sweep_type,
+            output_root=self.plot_root,
+        )
+
+        self.plot_worker.start()
+
     def trigger_freq_sweep(self):
-        self.worker.finished_task.disconnect(self.trigger_freq_sweep)
         task = self.current_task
+
         if hasattr(self, 'worker'):
+            self.worker.finished_task.disconnect(self.trigger_freq_sweep)
             if self.worker.isRunning():
                 self.log("Wait! An experiment is already in progress.", color="orange")
                 return
         else:
             self.log("No instruments were initialized", color="orange")
             return
+
         if self.btn_donwload.isChecked():
             self.worker.finished_task.connect(self.trigger_file_download)
         self.worker.create_task("freq_sweep",*task[1:-2])
         self.worker.start()
 
     def trigger_power_sweep(self):
-        self.worker.finished_task.disconnect(self.trigger_power_sweep)
         task = self.current_task
+
         if hasattr(self, 'worker'):
+            self.worker.finished_task.disconnect(self.trigger_power_sweep)
             if self.worker.isRunning():
                 self.log("Wait! An experiment is already in progress.", color="orange")
                 return
         else:
             self.log("No instruments were initialized", color="orange")
             return
+
         if self.btn_donwload.isChecked():
             self.worker.finished_task.connect(self.trigger_file_download)
         self.worker.create_task("power_sweep",*task[1:-2])
@@ -567,6 +748,7 @@ class SciControlApp(QMainWindow):
             self.worker.finished_task.disconnect(self.print_wrapper)
         except (TypeError, RuntimeError):
             pass
+
         try:
             if not self.tasks:
                 return
@@ -581,9 +763,10 @@ class SciControlApp(QMainWindow):
                         else:
                             self.handle_error(f"Unknown task: {self.tasks[0]}")
                         self.trigger_folder_creation()
-                        self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp}mK")
+                        self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp*1000}mK")
                         self.starting_temp = self.current_temp
                         self.scheduler_ui.remove_task_index(index)
+                        break
                     
             if(not self.worker.isRunning() and len(self.tasks)>0 and not self.cooling and not self.is_starting_cycle):
                 self.handle_response("Starting cooling cycle")
@@ -591,7 +774,7 @@ class SciControlApp(QMainWindow):
                 QTimer.singleShot(0, self.cryoworker.start_cycle_request)
                     
             if(self.current_temp<0.150):
-                self.cooling=0
+                self.cooling=False
                 
         except Exception as e:
             self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in send_task")
@@ -600,24 +783,24 @@ class SciControlApp(QMainWindow):
         self.is_starting_cycle = False
         if success:
             self.log("Cryoboss cycle started successfully. Cooling...", color="green")
-            self.cooling = 1
+            self.cooling = True
         else:
             self.handle_error("Cryoboss failed to start cycle.")
-            self.cooling = 0
+            self.cooling = False
         
     def sync_task_list(self, index):
-        """Syncs the internal list when a task is removed from the UI"""
         if 0 <= index < len(self.tasks):
             removed = self.tasks.pop(index)
             self.log(f"Removed task {index + 1} from schedule: {removed[0]}", color="gray")
-            
+
     def handle_response(self, text):
-        self.log(f"{text}", color = "white")
-        
+        self.log(f"{text}", color="white")
+
     def handle_error(self, err):
         self.log(f"ERROR: {err}", color="#ff4d4d")
 
-    
+    def handle_plot_finished(self):
+        self.log("All plots saved successfully.", color="lightgreen")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
