@@ -258,7 +258,7 @@ class CryobossWorker(QObject):
         """Perform network setup inside the thread, not the constructor."""
         try:
             self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.connection.settimeout(3.0) 
+            self.connection.settimeout(5.0) 
             self.connection.connect((self.address, 60770))
             
             atexit.register(self.cleanup)
@@ -511,7 +511,7 @@ class SciControlApp(QMainWindow):
 
         self.tasks = []
         self.current_task = None
-        self.current_temp = None
+        self.current_temp = 0
         
         self.script_dir = Path(__file__).resolve().parent
         self.plot_root = self.script_dir / "plot"
@@ -598,7 +598,7 @@ class SciControlApp(QMainWindow):
         
         self.right_layout.addWidget(QLabel("Address of Cryoboss (set it before init)"))
         self.right_layout.addWidget(self.sensor_data)
-        self.right_layout.addWidget(QLabel(f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}mK"))
+        self.right_layout.addWidget(QLabel(f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}"))
         self.right_layout.addWidget(self.scheduler_ui)
 
         self.top_box.addWidget(self.left_panel)
@@ -672,7 +672,7 @@ class SciControlApp(QMainWindow):
     def trigger_file_download(self):
         self.worker.finished_task.disconnect(self.trigger_file_download)
 
-        self.download_folder = self.data_root / (self.target.split("_")[0]+ f"_{format_temp_mk(self.starting_temp*1000)}mK-{format_temp_mk(self.current_temp*1000)}mK")
+        self.download_folder = self.data_root / (self.target.split("_")[0]+ f"_{format_temp_mk(self.starting_temp*1000)}-{format_temp_mk(self.current_temp*1000)}")
         self.worker.download_folder_name = self.download_folder
 
         self.worker.create_task("file_download")
