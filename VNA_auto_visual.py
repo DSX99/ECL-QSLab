@@ -308,11 +308,6 @@ class CryobossWorker(QObject):
             # Check the same conditions you had in your sleep logic
             if self.magnet_temp >= 5:
                 raise RuntimeError("Temp rose above 5 during verification")
-            
-            # If the temp hasn't changed at all, the hardware might be frozen
-            if self.magnet_temp == self.temp_at_start_request:
-                self.debug_signal.emit("Temp hasn't changed yet, waiting for next tick...")
-                return # Keep waiting; don't reset the flag yet
 
             # If we reach here, temp has changed and is < 5. Proceed!
             self.connection.send(b"Start MC = 1")
