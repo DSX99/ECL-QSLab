@@ -206,6 +206,13 @@ class InstrumentWorker(QThread):
 
     def freq_sweep(self, start_freq, stop_freq, scan_amount, if_freq, power, points, name=None):
 
+        start_freq = float(start_freq)
+        stop_freq = float(stop_freq)
+        scan_amount = float(scan_amount)
+        if_freq = float(if_freq)
+        power = float(power)
+        points = float(points)
+         
         step = (float(stop_freq) - float(start_freq)) / scan_amount
 
         for i in range(scan_amount):
@@ -219,6 +226,15 @@ class InstrumentWorker(QThread):
             )
 
     def power_sweep(self, start_freq, stop_freq, scan_amount, if_freq, start_power, stop_power, points, name=None):
+        
+        start_freq = float(start_freq)
+        stop_freq = float(stop_freq)
+        scan_amount = float(scan_amount)
+        if_freq = float(if_freq)
+        start_power = float(start_power)
+        stop_power = float(stop_power)
+        points = float(points)
+        
         step = (float(stop_power) - float(start_power)) / int(scan_amount)
 
         for i in range(int(scan_amount)):
@@ -593,7 +609,8 @@ class SciControlApp(QMainWindow):
         
         self.right_layout.addWidget(QLabel("Address of Cryoboss (set it before init)"))
         self.right_layout.addWidget(self.sensor_data)
-        self.right_layout.addWidget(QLabel(f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}"))
+        self.temp_label = QLabel(f"last temperature at 50mK: {format_temp_mk(self.current_temp*1000)}")
+        self.right_layout.addWidget(self.temp_label)
         self.right_layout.addWidget(self.scheduler_ui)
 
         self.top_box.addWidget(self.left_panel)
@@ -765,7 +782,9 @@ class SciControlApp(QMainWindow):
                         self.scheduler_ui.remove_task_index(index)
                         break
                     
-            if(not self.worker.isRunning() and len(self.tasks)>0 and not self.cooling and not self.is_starting_cycle):
+            max_temp = max(self.tasks, key = lambda x: x[-1], default=None)
+                
+            if(not self.worker.isRunning() and max_temp!=None and max_temp[-1]<self.current_temp and not self.cooling and not self.is_starting_cycle):
                 self.handle_response("Starting cooling cycle")
                 self.is_starting_cycle = True
                 QTimer.singleShot(0, self.cryoworker.start_cycle_request)
