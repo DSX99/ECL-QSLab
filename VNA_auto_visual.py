@@ -88,7 +88,8 @@ class InstrumentWorker(QThread):
         self.task_type = None
         self.params = {}
         self.inst = None
-        self.folder_name = None
+        self.VNA_folder_name = None
+        self.download_folder_name = None
         
     def create_task(self, task_type, *args):
         self.task_type = task_type
@@ -132,6 +133,7 @@ class InstrumentWorker(QThread):
 
     def working_dir(self, name):
         try:
+            self.VNA_folder_name = name
             check = self.inst.query(':MMEMory:CATalog:DIR? "/local/auto"')
             if not (name in check):
                 self.inst.write(f':MMEM:MDIR "/local/auto/{name}"')
@@ -154,7 +156,7 @@ class InstrumentWorker(QThread):
             files = self.inst.query(':MMEMory:CATalog?')
             files = files.split(",")
 
-            folder_path = Path(self.folder_name)
+            folder_path = Path(self.download_folder_name)
             folder_path.mkdir(parents=True, exist_ok=True)
 
             for file in files:
@@ -179,7 +181,7 @@ class InstrumentWorker(QThread):
                 with open(output_file, "wb") as f:
                     f.write(file_data)
                     
-            self.inst.write(f':MMEMory:RDIRectory "/local/auto/{self.folder_name}"')
+            self.inst.write(f':MMEMory:RDIRectory "/local/auto/{self.VNA_folder_name}"')
             self.response_received.emit("Deleted Folder")
 
             self.inst.timeout = 30e3
@@ -738,10 +740,20 @@ class SciControlApp(QMainWindow):
         ))
 
     def trigger_folder_creation(self):
-        folder = self.folder_name.text().strip()
-
         self.run_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
+        self.target = self.run_time
+        
+        self.log(f"Initializing working directory: {self.target}...")
+        self.worker.create_task("work_dir", self.target)
+        self.worker.start()
+
+    def trigger_file_download(self):
+        self.worker.finished_task.disconnect(self.trigger_file_download)
+        
+        
+        folder = self.folder_name.text().strip()
+        
         if folder:
             self.target = folder
         else:
@@ -752,12 +764,6 @@ class SciControlApp(QMainWindow):
                 run_time=self.run_time
             )
 
-        self.log(f"Initializing working directory: {self.target}...")
-        self.worker.create_task("work_dir", self.target)
-        self.worker.start()
-
-    def trigger_file_download(self):
-        self.worker.finished_task.disconnect(self.trigger_file_download)
         self.download_folder = self.target
         self.worker.create_task("file_download")
         self.worker.finished_task.connect(self.trigger_plot_generation)
