@@ -231,12 +231,13 @@ def make_frequency_sweep_html(
     if title is None:
         title = f"{parameter} frequency sweep - {plot_type} - {input_folder.name}"
 
+    fig.update_xaxes(title_text="Freq(GHz)", tickformat=".6s",ticksuffix="GHz", row=1, col=1, title_font=dict(size=26), tickfont=dict(size=22))
+    fig.update_yaxes(title_text=y_label, row=1, col=1, title_font=dict(size=26), tickfont=dict(size=22))
+
     fig.update_layout(
         height=900,
         title=title,
         template="ggplot2",
-        xaxis_title="Frequency (GHz)",
-        yaxis_title=y_label,
         showlegend=False,
     )
 

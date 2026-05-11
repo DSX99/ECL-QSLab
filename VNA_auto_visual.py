@@ -737,17 +737,9 @@ class SciControlApp(QMainWindow):
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
 
-        run_time = time.strftime("%Y-%m-%d-%H-%M-%S")
+        self.run_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
-        if folder:
-            self.target = folder
-        else:
-            self.target = build_measurement_folder_name(
-                task=self.current_task,
-                start_temp=self.starting_temp,
-                stop_temp=self.current_temp,
-                run_time=run_time
-            )
+        self.target=self.run_time
 
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir", self.target)
@@ -755,8 +747,19 @@ class SciControlApp(QMainWindow):
 
     def trigger_file_download(self):
         self.worker.finished_task.disconnect(self.trigger_file_download)
+        
+        folder = self.folder_name.text().strip()
+        if folder:
+            self.target = folder
+        else:
+            self.target = build_measurement_folder_name(
+                task=self.current_task,
+                start_temp=self.starting_temp,
+                stop_temp=self.current_temp,
+                run_time=self.run_time
+            )
 
-        self.download_folder = self.data_root / (self.target.split("_")[0]+ f"_{format_temp_mk(self.starting_temp*1000)}-{format_temp_mk(self.current_temp*1000)}")
+        self.download_folder = self.data_root / self.target
         self.worker.download_folder_name = self.download_folder
 
         self.worker.create_task("file_download")
@@ -856,7 +859,7 @@ class SciControlApp(QMainWindow):
                     
             max_temp = max(self.tasks, key = lambda x: x[-1], default=None)
                 
-            if(not self.worker.isRunning() and max_temp!=None and max_temp[-1]<self.current_temp and not self.cooling and not self.is_starting_cycle):
+            if(not self.worker.isRunning() and max_temp!=None and float(max_temp[-1])<self.current_temp and not self.cooling and not self.is_starting_cycle):
                 self.handle_response("Starting cooling cycle")
                 self.is_starting_cycle = True
                 QTimer.singleShot(0, self.cryoworker.start_cycle_request)
@@ -865,7 +868,7 @@ class SciControlApp(QMainWindow):
                 self.cooling=False
                 
         except Exception as e:
-            self.handle_error(f"An unexpected error occurred: {type(e).__name__} - {e} in send_task")
+            self.handle_error(f"An unexpected error occurred in send_task: {type(e).__name__} - {e} in send_task")
             
     def handle_cycle_status(self, success):
         self.is_starting_cycle = False
