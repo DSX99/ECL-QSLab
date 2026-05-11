@@ -689,10 +689,29 @@ class SciControlApp(QMainWindow):
             self.temp.text()
         ))
 
+    # def trigger_folder_creation(self):
+    #     folder = self.folder_name.text().strip()
+    #     self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
+    #     self.target = self.target + f"_{self.current_temp}mK"
+
+    #     self.log(f"Initializing working directory: {self.target}...")
+    #     self.worker.create_task("work_dir", self.target)
+    #     self.worker.start()
+
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
-        self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        self.target = self.target + f"_{self.current_temp}mK"
+
+        self.run_time = time.strftime("%Y-%m-%d-%H-%M-%S")
+
+        if folder:
+            self.target = folder
+        else:
+            self.target = build_measurement_folder_name(
+                task=self.current_task,
+                start_temp=self.start_temp,
+                stop_temp=self.current_temp,
+                run_time=self.run_time
+            )
 
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir", self.target)
