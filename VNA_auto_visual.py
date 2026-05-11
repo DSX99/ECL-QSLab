@@ -36,6 +36,46 @@ def format_temp_mk(value):
     """
     return f"{float(value):.1f}mK"
 
+def build_measurement_folder_name(task, start_temp, stop_temp, run_time):
+    """
+    Build folder name only.
+
+    freq_sweep task:
+    ("freq_sweep", start_freq, finish_freq, scan_amount, if_freq, power, points, temp)
+
+    power_sweep task:
+    ("power_sweep", start_freq, finish_freq, scan_amount, if_freq, start_power, finish_power, points, temp)
+    """
+    sweep_type = task[0]
+
+    start_freq = format_number(task[1])
+    stop_freq = format_number(task[2])
+    if_freq = format_number(task[4])
+
+    temp_part = f"{format_temp_mk(start_temp)}-{format_temp_mk(stop_temp)}"
+    freq_part = f"{start_freq}-{stop_freq}GHz"
+    if_part = f"IF{if_freq}Hz"
+
+    if sweep_type == "freq_sweep":
+        power = format_number(task[5])
+        points = format_number(task[6])
+
+        power_part = f"power{power}dB"
+        points_part = f"{points}points"
+
+    elif sweep_type == "power_sweep":
+        start_power = format_number(task[5])
+        stop_power = format_number(task[6])
+        points = format_number(task[7])
+
+        power_part = f"power{start_power}to{stop_power}dB"
+        points_part = f"{points}points"
+
+    else:
+        raise ValueError(f"Unknown sweep type: {sweep_type}")
+
+    return f"{run_time}_{temp_part}_{freq_part}_{if_part}_{power_part}_{points_part}_{sweep_type}"
+
 # worker for async work
 class InstrumentWorker(QThread):
     response_received = pyqtSignal(str)
@@ -668,15 +708,47 @@ class SciControlApp(QMainWindow):
                                self.start_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
         
     def power_sweep(self):
-        self.tasks.append(("power_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
-                               self.start_power.text(), self.finish_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
-        self.scheduler_ui.add_task(("power_sweep",self.start_freq.text(), self.finish_freq.text(), self.scan_amount.text(), self.if_freq.text(),
-                               self.start_power.text(), self.finish_power.text(), self.points.text(), self.from_temp.text(), self.to_temp.text()))
-        
+        self.tasks.append((
+            "power_sweep",
+            self.start_freq.text(),
+            self.finish_freq.text(),
+            self.scan_amount.text(),
+            self.if_freq.text(),
+            self.start_power.text(),
+            self.finish_power.text(),
+            self.points.text(),
+            self.from_temp.text(),
+            self.to_temp.text()
+        ))
+
+        self.scheduler_ui.add_task((
+            "power_sweep",
+            self.start_freq.text(),
+            self.finish_freq.text(),
+            self.scan_amount.text(),
+            self.if_freq.text(),
+            self.start_power.text(),
+            self.finish_power.text(),
+            self.points.text(),
+            self.from_temp.text(),
+            self.to_temp.text()
+        ))
+
     def trigger_folder_creation(self):
         folder = self.folder_name.text().strip()
-        self.target = folder if folder else time.strftime("%Y-%m-%d-%H-%M-%S")
-        self.target = self.target +f"_{np.round(self.current_temp,2)}mK_{self.current_task[1]}-{self.current_task[2]}GHz_{self.current_task[0]}"
+
+        run_time = time.strftime("%Y-%m-%d-%H-%M-%S")
+
+        if folder:
+            self.target = folder
+        else:
+            self.target = build_measurement_folder_name(
+                task=self.current_task,
+                start_temp=self.starting_temp,
+                stop_temp=self.current_temp,
+                run_time=run_time
+            )
+
         self.log(f"Initializing working directory: {self.target}...")
         self.worker.create_task("work_dir", self.target)
         self.worker.start()
