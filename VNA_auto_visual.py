@@ -764,7 +764,8 @@ class SciControlApp(QMainWindow):
                 run_time=self.run_time
             )
 
-        self.download_folder = self.target
+        self.download_folder = self.data_root / self.target
+        self.worker.download_folder_name = self.download_folder
         self.worker.create_task("file_download")
         self.worker.finished_task.connect(self.trigger_plot_generation)
         self.worker.start()
