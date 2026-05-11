@@ -758,6 +758,7 @@ class SciControlApp(QMainWindow):
 
     def trigger_file_download(self):
         self.worker.finished_task.disconnect(self.trigger_file_download)
+        self.download_folder = self.target
         self.worker.create_task("file_download")
         self.worker.finished_task.connect(self.trigger_plot_generation)
         self.worker.start()
@@ -847,9 +848,9 @@ class SciControlApp(QMainWindow):
                             self.worker.finished_task.connect(self.trigger_power_sweep)
                         else:
                             self.handle_error(f"Unknown task: {self.tasks[0]}")
+                        self.starting_temp = self.current_temp
                         self.trigger_folder_creation()
                         self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp*1000}mK")
-                        self.starting_temp = self.current_temp
                         self.scheduler_ui.remove_task_index(index)
                         break
                     
