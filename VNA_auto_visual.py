@@ -248,10 +248,10 @@ class InstrumentWorker(QThread):
 
         start_freq = float(start_freq)
         stop_freq = float(stop_freq)
-        scan_amount = float(scan_amount)
+        scan_amount = int(scan_amount)
         if_freq = float(if_freq)
         power = float(power)
-        points = float(points)
+        points = int(points)
          
         step = (float(stop_freq) - float(start_freq)) / scan_amount
 
@@ -269,11 +269,11 @@ class InstrumentWorker(QThread):
         
         start_freq = float(start_freq)
         stop_freq = float(stop_freq)
-        scan_amount = float(scan_amount)
+        scan_amount = int(scan_amount)
         if_freq = float(if_freq)
         start_power = float(start_power)
         stop_power = float(stop_power)
-        points = float(points)
+        points = int(points)
         
         step = (float(stop_power) - float(start_power)) / int(scan_amount)
 
