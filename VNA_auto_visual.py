@@ -568,6 +568,7 @@ class SciControlApp(QMainWindow):
         self.tasks = []
         self.current_task = None
         self.current_temp = 0
+        self.current_task_index = None
         
         self.script_dir = Path(__file__).resolve().parent
         self.plot_root = self.script_dir / "plot"
@@ -759,8 +760,8 @@ class SciControlApp(QMainWindow):
         else:
             self.target = build_measurement_folder_name(
                 task=self.current_task,
-                start_temp=self.starting_temp,
-                stop_temp=self.current_temp,
+                start_temp=self.starting_temp*1000,
+                stop_temp=self.current_temp*1000,
                 run_time=self.run_time
             )
 
@@ -816,6 +817,10 @@ class SciControlApp(QMainWindow):
         self.worker.create_task("freq_sweep",*task[1:-2])
         self.worker.start()
 
+        if self.current_task_index is not None:
+            self.scheduler_ui.remove_task_index(self.current_task_index)
+            self.current_task_index = None
+
     def trigger_power_sweep(self):
         task = self.current_task
 
@@ -832,6 +837,10 @@ class SciControlApp(QMainWindow):
             self.worker.finished_task.connect(self.trigger_file_download)
         self.worker.create_task("power_sweep",*task[1:-2])
         self.worker.start()
+
+        if self.current_task_index is not None:
+            self.scheduler_ui.remove_task_index(self.current_task_index)
+            self.current_task_index = None
         
     def send_task(self, got_temp):
         self.current_temp=got_temp
@@ -855,10 +864,12 @@ class SciControlApp(QMainWindow):
                             self.worker.finished_task.connect(self.trigger_power_sweep)
                         else:
                             self.handle_error(f"Unknown task: {self.tasks[0]}")
-                        self.starting_temp = self.current_temp
+
+                        self.current_task_index = index
+
                         self.trigger_folder_creation()
                         self.log(f"Starting new measurement:{task[0]} with expected temp:{task[-1]}mK, current temp:{self.current_temp*1000}mK")
-                        self.scheduler_ui.remove_task_index(index)
+                        self.starting_temp = self.current_temp
                         break
                     
             max_temp = max(self.tasks, key = lambda x: x[-1], default=None)
