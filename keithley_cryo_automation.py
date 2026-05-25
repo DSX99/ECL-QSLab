@@ -129,16 +129,19 @@ def should_start_measurement(
     start_mk: float,
     stop_mk: float,
 ) -> bool:
-    return inside_temperature_range(current_temp_mk, start_mk, stop_mk)
+    """
+    Start whenever the temperature enters the selected range.
+    This works for both heating and cooling.
+    """
+    if previous_temp_mk is None:
+        return inside_temperature_range(current_temp_mk, start_mk, stop_mk)
+
+    was_inside = inside_temperature_range(previous_temp_mk, start_mk, stop_mk)
+    is_inside = inside_temperature_range(current_temp_mk, start_mk, stop_mk)
+    return (not was_inside) and is_inside
 
 
-def should_stop_measurement(current_temp_mk: float, start_mk: float, stop_mk: float) -> bool:
-    if stop_mk > start_mk:
-        return current_temp_mk >= stop_mk   # heating
-    elif stop_mk < start_mk:
-        return current_temp_mk <= stop_mk   # cooling
-    else:
-        return False
+
 
 
 def infer_temperature_direction(previous_temp_mk: Optional[float], current_temp_mk: Optional[float]) -> str:
@@ -216,16 +219,21 @@ def build_tsp_helper_script() -> List[str]:
     It takes raw readings continuously for duration_s seconds.
     The readings stay in defbuffer1. Python then fetches the whole buffer.
 
+    This is different from taking one reading, waiting 10 s, and repeating.
+    Here, the Keithley measures as fast as the configured NPLC/settings allow
+    for the full block duration, then Python receives the batch.
     """
     return [
         "loadscript cryo_helpers",
         "function cryo_measure_block(duration_s)",
         "    defbuffer1.clear()",
         "    smu.measure.count = 1",
+        "    smu.source.output = smu.ON",
         "    timer.cleartime()",
         "    while timer.gettime() < duration_s do",
         "        smu.measure.read(defbuffer1)",
         "    end",
+        "    smu.source.output = smu.OFF",
         "    return defbuffer1.n",
         "end",
         "endscript",
@@ -365,8 +373,6 @@ class KeithleyWorker(QThread):
 
         for line in build_tsp_config_script(self.task):
             self.inst.write(line)
-        
-        self.inst.write("smu.source.output = smu.ON")
 
         self.response.emit(
             "Keithley configured: "
@@ -447,67 +453,124 @@ class KeithleyWorker(QThread):
 # ============================================================
 
 
-class CryobossWorker(QObject):
+class CryobossCSVWorker(QObject):
     temperature_updated = pyqtSignal(float, str, list)  # temp_mK, pc_time, raw row
     error = pyqtSignal(str)
     response = pyqtSignal(str)
 
-    def __init__(self, address):
+    def __init__(self):
         super().__init__()
-        self.address = address
-        self.connection = None
-        self.check_timer = None
+        self.file_path: Optional[str] = None
+        self.temp_column_index: int = 3
+        self.temp_unit: str = "K"
+        self.last_position: int = 0
+        self.watcher: Optional[QFileSystemWatcher] = None
+        self.check_timer: Optional[QTimer] = None
 
-    def initialize_socket(self):
-        """
-        Connect to Cryoboss through socket.
-        """
-        try:
-            self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.connection.settimeout(5.0)
-            self.connection.connect((self.address, 60770))
-
-            self.start_monitoring()
-
-        except Exception as e:
-            self.error.emit(f"Cryoboss connection error {e}")
+    def configure(self, file_path: str, temp_column_index: int, temp_unit: str):
+        self.file_path = os.path.abspath(file_path)
+        self.temp_column_index = int(temp_column_index)
+        self.temp_unit = temp_unit
+        self.last_position = 0
 
     def start_monitoring(self):
+        if not self.file_path:
+            self.error.emit("No Cryoboss CSV path was provided.")
+            return
+
+        self.watcher = QFileSystemWatcher(self)
+
+        if os.path.exists(self.file_path):
+            self.watcher.addPath(self.file_path)
+
+            # Start from the end of the existing file.
+            # This means only newly appended Cryoboss rows are processed.
+            self.last_position = os.path.getsize(self.file_path)
+        else:
+            self.response.emit(f"Waiting for Cryoboss CSV to appear: {self.file_path}")
+            self.last_position = 0
+
+        self.watcher.fileChanged.connect(self.process_new_lines)
+
+        # Timer fallback is important on network folders / SMB shares.
+        # QFileSystemWatcher alone can miss updates there.
         self.check_timer = QTimer(self)
-        self.check_timer.timeout.connect(self.process_data)
+        self.check_timer.timeout.connect(self.process_new_lines)
         self.check_timer.start(2000)
 
-        self.response.emit("Monitoring data from Cryoboss")
+        self.response.emit(f"Monitoring Cryoboss CSV: {self.file_path}")
 
-    def process_data(self):
-        try:
-            self.connection.send(b"Temps.FAA_Display = ?")
-            recv = self.connection.recv(4096)
-
-            temp_text = recv.decode().split("=")[-1].strip()
-            temp_k = float(temp_text)
-
-            temp_mk = temp_k * 1000.0
-
-            pc_time = datetime.now().isoformat(timespec="seconds")
-            raw_data = ["Temps.FAA_Display", temp_k]
-
-            self.temperature_updated.emit(temp_mk, pc_time, raw_data)
-
-        except Exception as e:
-            self.error.emit(f"Cryoboss network error: {str(e)}")
-
-    def cleanup(self):
+    def stop_monitoring(self):
         if self.check_timer is not None:
             self.check_timer.stop()
             self.check_timer = None
 
-        if self.connection:
+        if self.watcher is not None:
+            self.watcher.deleteLater()
+            self.watcher = None
+
+    def process_new_lines(self):
+        if not self.file_path:
+            return
+
+        if not os.path.exists(self.file_path):
+            return
+
+        # If the file appeared after the monitor started, add it to the watcher.
+        if self.watcher is not None and self.file_path not in self.watcher.files():
             try:
-                self.connection.close()
+                self.watcher.addPath(self.file_path)
             except Exception:
                 pass
-            self.connection = None
+
+        try:
+            current_size = os.path.getsize(self.file_path)
+
+            # If Cryoboss overwrote/rotated the file, start from the beginning again.
+            if current_size < self.last_position:
+                self.last_position = 0
+
+            if current_size == self.last_position:
+                return
+
+            with open(self.file_path, "r", newline="", encoding="utf-8", errors="ignore") as f:
+                f.seek(self.last_position)
+                reader = csv.reader(f)
+
+                for row in reader:
+                    self._process_row(row)
+
+                self.last_position = f.tell()
+
+        except PermissionError:
+            # Common when another program is writing the file.
+            return
+        except Exception as e:
+            self.error.emit(f"Cryoboss CSV error: {type(e).__name__} - {e}")
+
+    def _process_row(self, row: List[str]):
+        if not row:
+            return
+
+        if self.temp_column_index >= len(row):
+            return
+
+        temp_value = safe_float(row[self.temp_column_index])
+        if temp_value is None:
+            # Header or malformed row.
+            return
+
+        unit = self.temp_unit.lower()
+        if unit == "k":
+            temp_mk = temp_value * 1000.0
+        elif unit == "mk":
+            temp_mk = temp_value
+        else:
+            self.error.emit(f"Unknown temperature unit: {self.temp_unit}")
+            return
+
+        pc_time = datetime.now().isoformat(timespec="seconds")
+        self.temperature_updated.emit(temp_mk, pc_time, row)
 
 
 # ============================================================
@@ -636,11 +699,8 @@ class TaskBox(QFrame):
         )
 
     def update_display_text(self, order: int):
-        
-        direction = "heating" if self.task.stop_temp_mk > self.task.start_temp_mk else "cooling"
-
         self.label.setText(
-            f"[{order:02d}] {self.task.name or 'R(T)'} | {direction}\n"
+            f"[{order:02d}] {self.task.name or 'R(T)'} | both heating/cooling\n"
             f"     TEMP : {self.task.start_temp_mk:g} mK -> {self.task.stop_temp_mk:g} mK\n"
             f"     SMU  : I={self.task.source_current_a:g} A, Vlim={self.task.voltage_limit_v:g} V, "
             f"NPLC={self.task.nplc:g}\n"
@@ -718,7 +778,6 @@ class CryoKeithleyApp(QMainWindow):
         self.scheduler_running = False
         self.measurement_active = False
         self.waiting_for_keithley = False
-        self.stop_after_current_block = False
 
         self.keithley = KeithleyWorker()
         self.keithley.connected.connect(self.on_keithley_connected)
@@ -778,10 +837,30 @@ class CryoKeithleyApp(QMainWindow):
         layout.addWidget(self.btn_disconnect)
 
         layout.addSpacing(15)
-        layout.addWidget(QLabel("<b>Cryoboss connection</b>"))
-        layout.addWidget(QLabel("Cryoboss IP address"))
-        self.input_cryo_path = QLineEdit("10.1.197.100")
+        layout.addWidget(QLabel("<b>Cryoboss CSV</b>"))
+        layout.addWidget(QLabel("Cryoboss CSV path"))
+        self.input_cryo_path = QLineEdit(
+            "/run/user/1000/gvfs/smb-share:server=10.1.197.100,share=data/manual_file_name_auto.csv"
+        )
         layout.addWidget(self.input_cryo_path)
+
+        btn_browse = QPushButton("Browse CSV")
+        btn_browse.clicked.connect(self.browse_cryo_csv)
+        layout.addWidget(btn_browse)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Temperature column index"), 0, 0)
+        self.spin_temp_col = QSpinBox()
+        self.spin_temp_col.setRange(0, 100)
+        self.spin_temp_col.setValue(3)
+        grid.addWidget(self.spin_temp_col, 0, 1)
+
+        grid.addWidget(QLabel("Temperature unit"), 1, 0)
+        self.combo_temp_unit = QComboBox()
+        self.combo_temp_unit.addItems(["K", "mK"])
+        grid.addWidget(self.combo_temp_unit, 1, 1)
+
+        layout.addLayout(grid)
 
         self.btn_start_cryo = QPushButton("Start temperature monitor")
         self.btn_start_cryo.clicked.connect(self.start_temperature_monitor)
@@ -970,32 +1049,27 @@ class CryoKeithleyApp(QMainWindow):
         self.keithley.start()
 
     def start_temperature_monitor(self):
-        if self.cryo_reader is not None or self.cryo_thread is not None:
+        if self.cryo_reader is not None:
             self.stop_temperature_monitor(log_message=False)
 
-        address = self.input_cryo_path.text().strip()
-
-        self.cryo_thread = QThread()
-        self.cryo_reader = CryobossWorker(address)
-
-        self.cryo_reader.moveToThread(self.cryo_thread)
-
-        self.cryo_thread.started.connect(self.cryo_reader.initialize_socket)
+        self.cryo_reader = CryobossCSVWorker()
         self.cryo_reader.temperature_updated.connect(self.on_temperature_updated)
         self.cryo_reader.response.connect(self.log)
         self.cryo_reader.error.connect(self.handle_error)
 
-        self.cryo_thread.start()
-
-        self.log(f"Starting Cryoboss monitor at {address}:60770", "lightblue")
+        self.cryo_reader.configure(
+            file_path=self.input_cryo_path.text(),
+            temp_column_index=self.spin_temp_col.value(),
+            temp_unit=self.combo_temp_unit.currentText(),
+        )
+        self.cryo_reader.start_monitoring()
 
     def stop_temperature_monitor(self, log_message=True):
-        if self.cryo_thread is not None:
-            self.cryo_thread.quit()
-            self.cryo_thread.wait()
-            self.cryo_thread = None
+        if self.cryo_reader is not None:
+            self.cryo_reader.stop_monitoring()
+            self.cryo_reader = None
 
-        self.cryo_reader = None
+        self.cryo_thread = None
 
         if log_message:
             self.log("Temperature monitor stopped.", "orange")
@@ -1083,16 +1157,25 @@ class CryoKeithleyApp(QMainWindow):
                 self.start_task(next_task)
 
         if self.measurement_active and self.active_task is not None:
-            if should_stop_measurement(
+            inside = inside_temperature_range(
                 self.latest_temp_mk,
                 self.active_task.start_temp_mk,
                 self.active_task.stop_temp_mk,
-            ):
+            )
+
+            self.log(
+                f"Range check: T={self.latest_temp_mk:.3f} mK, "
+                f"start={self.active_task.start_temp_mk:.3f}, "
+                f"stop={self.active_task.stop_temp_mk:.3f}, "
+                f"inside={inside}",
+                "gray",
+            )
+
+            if not inside:
                 self.log(
-                    "Stop temperature reached. Current block will finish, then measurement will stop.",
+                    "Temperature left the selected range. Current block will finish, then measurement will stop.",
                     "lightgreen",
                 )
-                self.stop_after_current_block = True
                 self.measurement_active = False
 
     def start_task(self, task: MeasurementTask):
@@ -1108,7 +1191,6 @@ class CryoKeithleyApp(QMainWindow):
         self.measurement_active = False  # becomes true after Keithley is configured
         self.measurement_points = []
         self.measurement_start_time = time.perf_counter()
-        self.stop_after_current_block = False
 
         self.active_output_stem = task.folder_stem()
         self.active_csv_path = CSV_DIR / f"{self.active_output_stem}.csv"
@@ -1133,7 +1215,7 @@ class CryoKeithleyApp(QMainWindow):
                 f"Starting first measurement block. Keithley will measure continuously for {self.active_task.interval_s:g} s, then send the batch.",
                 "lightgreen",
             )
-            QTimer.singleShot(200, self.request_measurement_point)
+            self.request_measurement_point()
 
     def request_measurement_point(self):
         if not self.measurement_active or self.active_task is None:
@@ -1144,8 +1226,7 @@ class CryoKeithleyApp(QMainWindow):
             return
 
         if self.keithley.isRunning() or self.waiting_for_keithley:
-            self.log("Keithley worker is still finishing. Retrying shortly.", "orange")
-            QTimer.singleShot(500, self.request_measurement_point)
+            self.log("Keithley still busy. Skipping this interval.", "orange")
             return
 
         self.waiting_for_keithley = True
@@ -1222,10 +1303,6 @@ class CryoKeithleyApp(QMainWindow):
                 self.measurement_points.append(point)
                 self.append_point_to_csv(point)
 
-                MAX_POINTS_IN_MEMORY = 50000
-                if len(self.measurement_points) > MAX_POINTS_IN_MEMORY:
-                    self.measurement_points = self.measurement_points[-MAX_POINTS_IN_MEMORY:]
-
             self.update_live_plot()
             last = self.measurement_points[-1]
             self.label_resistance.setText(f"Resistance: {last.resistance_ohm:.6g} Ω")
@@ -1234,29 +1311,18 @@ class CryoKeithleyApp(QMainWindow):
                 f"latest T={last.temperature_mk:.3f} mK | latest R={last.resistance_ohm:.6g} Ω"
             )
 
-        # If stop was requested while the Keithley block was running,
-        # finalize now that the block has returned.
-        if self.stop_after_current_block:
-            self.finish_current_task()
-            return
-
-        # Otherwise, start the next block if measurement is still active.
+        # Start the next block immediately if still inside range.
         if self.active_task is not None and self.latest_temp_mk is not None:
-            if self.measurement_active:
-                QTimer.singleShot(200, self.request_measurement_point)
+            if inside_temperature_range(self.latest_temp_mk, self.active_task.start_temp_mk, self.active_task.stop_temp_mk):
+                if self.measurement_active:
+                    self.request_measurement_point()
+            else:
+                self.finish_current_task()
 
     def finish_current_task(self):
         self.measurement_timer.stop()
         self.measurement_active = False
         self.waiting_for_keithley = False
-        self.stop_after_current_block = False
-
-        try:
-            if self.keithley.inst is not None:
-                self.keithley.inst.write("smu.source.output = smu.OFF")
-        except Exception:
-            pass
-        
         self.finalize_active_measurement(aborted=False)
 
         if self.scheduler_running and self.tasks:
