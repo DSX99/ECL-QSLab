@@ -130,17 +130,33 @@ def should_start_measurement(
     stop_mk: float,
 ) -> bool:
     """
-    Start whenever the temperature enters the selected range.
-    This works for both heating and cooling.
+    Heating: start when current temperature reaches or passes start temperature.
+    Cooling: start when current temperature reaches or passes start temperature downward.
     """
-    if previous_temp_mk is None:
-        return inside_temperature_range(current_temp_mk, start_mk, stop_mk)
+    if stop_mk > start_mk:
+        # heating
+        return current_temp_mk >= start_mk
 
-    was_inside = inside_temperature_range(previous_temp_mk, start_mk, stop_mk)
-    is_inside = inside_temperature_range(current_temp_mk, start_mk, stop_mk)
-    return (not was_inside) and is_inside
+    if stop_mk < start_mk:
+        # cooling
+        return current_temp_mk <= start_mk
 
+    return False
 
+def should_stop_measurement(current_temp_mk: float, start_mk: float, stop_mk: float) -> bool:
+    """
+    Stop only when the final target is reached.
+    Do not stop just because the temperature fluctuates around the start boundary.
+    """
+    if stop_mk > start_mk:
+        # heating
+        return current_temp_mk >= stop_mk
+
+    if stop_mk < start_mk:
+        # cooling
+        return current_temp_mk <= stop_mk
+
+    return False
 
 
 
@@ -1157,25 +1173,16 @@ class CryoKeithleyApp(QMainWindow):
                 self.start_task(next_task)
 
         if self.measurement_active and self.active_task is not None:
-            inside = inside_temperature_range(
+            if should_stop_measurement(
                 self.latest_temp_mk,
                 self.active_task.start_temp_mk,
                 self.active_task.stop_temp_mk,
-            )
-
-            self.log(
-                f"Range check: T={self.latest_temp_mk:.3f} mK, "
-                f"start={self.active_task.start_temp_mk:.3f}, "
-                f"stop={self.active_task.stop_temp_mk:.3f}, "
-                f"inside={inside}",
-                "gray",
-            )
-
-            if not inside:
+            ):
                 self.log(
-                    "Temperature left the selected range. Current block will finish, then measurement will stop.",
+                    "Stop temperature reached. Current block will finish, then measurement will stop.",
                     "lightgreen",
                 )
+                self.stop_after_current_block = True
                 self.measurement_active = False
 
     def start_task(self, task: MeasurementTask):
@@ -1282,6 +1289,11 @@ class CryoKeithleyApp(QMainWindow):
         if not points:
             self.log("Keithley returned an empty block.", "orange")
         else:
+            DISCARD_FIRST_POINTS = 1
+
+            if len(points) > DISCARD_FIRST_POINTS:
+                points = points[DISCARD_FIRST_POINTS:]
+
             for rel_t, resistance in points:
                 sample_perf_time = self.current_block_start_perf + float(rel_t)
                 elapsed = sample_perf_time - self.measurement_start_time
