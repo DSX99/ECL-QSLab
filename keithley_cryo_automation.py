@@ -216,21 +216,16 @@ def build_tsp_helper_script() -> List[str]:
     It takes raw readings continuously for duration_s seconds.
     The readings stay in defbuffer1. Python then fetches the whole buffer.
 
-    This is different from taking one reading, waiting 10 s, and repeating.
-    Here, the Keithley measures as fast as the configured NPLC/settings allow
-    for the full block duration, then Python receives the batch.
     """
     return [
         "loadscript cryo_helpers",
         "function cryo_measure_block(duration_s)",
         "    defbuffer1.clear()",
         "    smu.measure.count = 1",
-        "    smu.source.output = smu.ON",
         "    timer.cleartime()",
         "    while timer.gettime() < duration_s do",
         "        smu.measure.read(defbuffer1)",
         "    end",
-        "    smu.source.output = smu.OFF",
         "    return defbuffer1.n",
         "end",
         "endscript",
@@ -370,6 +365,8 @@ class KeithleyWorker(QThread):
 
         for line in build_tsp_config_script(self.task):
             self.inst.write(line)
+        
+        self.inst.write("smu.source.output = smu.ON")
 
         self.response.emit(
             "Keithley configured: "
@@ -1253,6 +1250,13 @@ class CryoKeithleyApp(QMainWindow):
         self.measurement_active = False
         self.waiting_for_keithley = False
         self.stop_after_current_block = False
+
+        try:
+            if self.keithley.inst is not None:
+                self.keithley.inst.write("smu.source.output = smu.OFF")
+        except Exception:
+            pass
+        
         self.finalize_active_measurement(aborted=False)
 
         if self.scheduler_running and self.tasks:
