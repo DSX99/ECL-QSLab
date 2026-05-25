@@ -228,12 +228,10 @@ def build_tsp_helper_script() -> List[str]:
         "function cryo_measure_block(duration_s)",
         "    defbuffer1.clear()",
         "    smu.measure.count = 1",
-        "    smu.source.output = smu.ON",
         "    timer.cleartime()",
         "    while timer.gettime() < duration_s do",
         "        smu.measure.read(defbuffer1)",
         "    end",
-        "    smu.source.output = smu.OFF",
         "    return defbuffer1.n",
         "end",
         "endscript",
@@ -248,7 +246,7 @@ def build_tsp_config_script(task: MeasurementTask) -> List[str]:
         "smu.terminals = smu.TERMINALS_REAR",
         "defbuffer1.clear()",
         "smu.measure.func = smu.FUNC_DC_VOLTAGE",
-        "smu.measure.autorange = smu.ON",
+        # "smu.measure.autorange = smu.ON",
         "smu.measure.unit = smu.UNIT_OHM",
         f"smu.measure.nplc = {task.nplc}",
         f"smu.measure.sense = {sense_mode}",
@@ -337,15 +335,15 @@ class KeithleyWorker(QThread):
         self.connected.emit(idn)
 
         # Check language. The program expects TSP.
-        try:
-            lang = self.inst.query("*LANG?").strip()
-            self.response.emit(f"Keithley command set: {lang}")
-            if "TSP" not in lang.upper():
-                self.response.emit(
-                    "WARNING: Keithley is not in TSP mode. Change command set to TSP from front panel and reboot."
-                )
-        except Exception:
-            self.response.emit("Could not query *LANG?. Continuing, but TSP mode is still required.")
+        # try:
+        #     lang = self.inst.query("*LANG?").strip()
+        #     self.response.emit(f"Keithley command set: {lang}")
+        #     if "TSP" not in lang.upper():
+        #         self.response.emit(
+        #             "WARNING: Keithley is not in TSP mode. Change command set to TSP from front panel and reboot."
+        #         )
+        # except Exception:
+        #     self.response.emit("Could not query *LANG?. Continuing, but TSP mode is still required.")
 
         self._load_tsp_helpers()
 
@@ -373,6 +371,8 @@ class KeithleyWorker(QThread):
 
         for line in build_tsp_config_script(self.task):
             self.inst.write(line)
+
+        self.inst.write("smu.source.output = smu.ON")
 
         self.response.emit(
             "Keithley configured: "
@@ -1325,6 +1325,13 @@ class CryoKeithleyApp(QMainWindow):
         self.measurement_timer.stop()
         self.measurement_active = False
         self.waiting_for_keithley = False
+
+        try:
+            if self.keithley.inst is not None:
+                self.keithley.inst.write("smu.source.output = smu.OFF")
+        except Exception:
+            pass
+
         self.finalize_active_measurement(aborted=False)
 
         if self.scheduler_running and self.tasks:
