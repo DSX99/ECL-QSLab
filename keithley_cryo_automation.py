@@ -1215,7 +1215,8 @@ class CryoKeithleyApp(QMainWindow):
                 f"Starting first measurement block. Keithley will measure continuously for {self.active_task.interval_s:g} s, then send the batch.",
                 "lightgreen",
             )
-            self.request_measurement_point()
+
+            QTimer.singleShot(200, self.request_measurement_point)
 
     def request_measurement_point(self):
         if not self.measurement_active or self.active_task is None:
@@ -1227,6 +1228,7 @@ class CryoKeithleyApp(QMainWindow):
 
         if self.keithley.isRunning() or self.waiting_for_keithley:
             self.log("Keithley still busy. Skipping this interval.", "orange")
+            QTimer.singleShot(500, self.request_measurement_point)
             return
 
         self.waiting_for_keithley = True
@@ -1315,7 +1317,7 @@ class CryoKeithleyApp(QMainWindow):
         if self.active_task is not None and self.latest_temp_mk is not None:
             if inside_temperature_range(self.latest_temp_mk, self.active_task.start_temp_mk, self.active_task.stop_temp_mk):
                 if self.measurement_active:
-                    self.request_measurement_point()
+                    QTimer.singleShot(200, self.request_measurement_point)
             else:
                 self.finish_current_task()
 
