@@ -794,6 +794,7 @@ class CryoKeithleyApp(QMainWindow):
         self.scheduler_running = False
         self.measurement_active = False
         self.waiting_for_keithley = False
+        self.stop_after_current_block = False
 
         self.keithley = KeithleyWorker()
         self.keithley.connected.connect(self.on_keithley_connected)
@@ -1198,6 +1199,7 @@ class CryoKeithleyApp(QMainWindow):
         self.measurement_active = False  # becomes true after Keithley is configured
         self.measurement_points = []
         self.measurement_start_time = time.perf_counter()
+        self.stop_after_current_block = False
 
         self.active_output_stem = task.folder_stem()
         self.active_csv_path = CSV_DIR / f"{self.active_output_stem}.csv"
@@ -1325,18 +1327,20 @@ class CryoKeithleyApp(QMainWindow):
                 f"latest T={last.temperature_mk:.3f} mK | latest R={last.resistance_ohm:.6g} Ω"
             )
 
+        if self.stop_after_current_block:
+            self.finish_current_task()
+            return
+
         # Start the next block immediately if still inside range.
         if self.active_task is not None and self.latest_temp_mk is not None:
-            if inside_temperature_range(self.latest_temp_mk, self.active_task.start_temp_mk, self.active_task.stop_temp_mk):
-                if self.measurement_active:
+            if self.measurement_active:
                     QTimer.singleShot(200, self.request_measurement_point)
-            else:
-                self.finish_current_task()
 
     def finish_current_task(self):
         self.measurement_timer.stop()
         self.measurement_active = False
         self.waiting_for_keithley = False
+        self.stop_after_current_block = False
 
         try:
             if self.keithley.inst is not None:
